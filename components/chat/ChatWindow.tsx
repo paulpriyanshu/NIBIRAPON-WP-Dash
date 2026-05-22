@@ -1,0 +1,310 @@
+'use client';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { useAppDispatch, useAppSelector } from '@/hooks/redux';
+import { fetchMessages, pollMessages, addMessageToConversation, replaceMessage, updateMessageStatusInConversation } from '@/store/slices/messagesSlice';
+import { sendMessage, updateConversationStatus, addMessage, clearConversation } from '@/store/slices/conversationsSlice';
+import MessageBubble from './MessageBubble';
+import MessageInput from './MessageInput';
+import ContactPanel from './ContactPanel';
+import ReferencedMessageModal from './ReferencedMessageModal';
+import Avatar from '@/components/ui/Avatar';
+import { formatDateSeparator, shouldShowDateSeparator, generateId } from '@/lib/utils';
+import {
+  Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, Tag, ArrowLeft, Layers
+} from 'lucide-react';
+import { Message } from '@/types';
+import { fetchTemplates } from '@/store/slices/templatesSlice';
+
+const EMPTY_MSGS: Message[] = [];
+
+export default function ChatWindow() {
+  const dispatch = useAppDispatch();
+  const selectedId = useAppSelector((s) => s.conversations.selectedId);
+  const conversation = useAppSelector((s) =>
+    s.conversations.conversations.find((c) => c.id === selectedId)
+  );
+  const messages = useAppSelector((s) =>
+    selectedId ? (s.messages.byConversation[selectedId] ?? EMPTY_MSGS) : EMPTY_MSGS
+  );
+  const messagesLoading = useAppSelector((s) => selectedId ? s.messages.loading[selectedId] : false);
+
+  const [showContactPanel, setShowContactPanel] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [referencedMsgId, setReferencedMsgId] = useState<string | null>(null);
+  const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
+  const dispatch2 = useAppDispatch();
+
+  useEffect(() => {
+    if (selectedId) {
+      dispatch(fetchMessages({ conversationId: selectedId }));
+      dispatch(fetchTemplates());
+    }
+  }, [selectedId, dispatch]);
+
+  // Poll for new incoming messages every 3 seconds; also poll immediately on tab focus
+  useEffect(() => {
+    if (!selectedId) return;
+    const poll = async () => {
+      const latestTs = messages.length > 0 ? Math.max(...messages.map((m) => m.timestamp)) : 0;
+      const result = await dispatch(pollMessages({ conversationId: selectedId, after: latestTs })).unwrap();
+      // Bubble each new message up to the conversations list so it reorders to the top
+      if (result.messages.length > 0) {
+        const latest = result.messages.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+        dispatch(addMessage(latest));
+      }
+    };
+    const interval = setInterval(poll, 3000);
+    const onFocus = () => poll();
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [selectedId, dispatch, messages]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleQuoteClick = useCallback((msgId: string) => {
+    const el = document.getElementById(`msg-${msgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // brief highlight flash
+      el.classList.add('ring-2', 'ring-[#25D366]', 'rounded-xl');
+      setTimeout(() => el.classList.remove('ring-2', 'ring-[#25D366]', 'rounded-xl'), 1500);
+    } else {
+      setReferencedMsgId(msgId);
+    }
+  }, []);
+
+  const handleSend = useCallback(
+    async (text: string, type = 'text', templateName?: string, mediaId?: string, filename?: string, mimeType?: string, previewUrl?: string, replyToId?: string, templateData?: {
+      bodyParams: string[];
+      isMPMTemplate: boolean;
+      mpmSections: { title: string; product_items: { product_retailer_id: string }[] }[];
+      thumbnailProductRetailerId: string;
+    }) => {
+      if (!selectedId || !conversation) return;
+      const tempId = `temp-${generateId()}`;
+      const tempMessage: Message = {
+        id: tempId,
+        conversationId: selectedId,
+        from: 'business',
+        to: conversation.contact.phone,
+        type: type as Message['type'],
+        text: text || undefined,
+        timestamp: Date.now(),
+        status: 'sending',
+        isOutgoing: true,
+        templateName,
+        media: mediaId ? { url: previewUrl, mimeType, filename } : undefined,
+      };
+      dispatch(addMessageToConversation(tempMessage));
+      dispatch(addMessage(tempMessage));
+      setReplyToMessage(null);
+      try {
+        const realMessage = await dispatch(
+          sendMessage({
+            conversationId: selectedId, to: conversation.contact.phone, text, type, templateName, mediaId, filename, mimeType, replyToId,
+            bodyParams: templateData?.bodyParams,
+            isMPMTemplate: templateData?.isMPMTemplate,
+            mpmSections: templateData?.mpmSections,
+            thumbnailProductRetailerId: templateData?.thumbnailProductRetailerId,
+          })
+        ).unwrap();
+        dispatch(replaceMessage({ conversationId: selectedId, tempId, message: realMessage }));
+      } catch (err) {
+        console.error('Failed to send message:', err);
+        dispatch(updateMessageStatusInConversation({ conversationId: selectedId, messageId: tempId, status: 'failed' }));
+      }
+    },
+    [selectedId, conversation, dispatch]
+  );
+
+  const filteredMessages = searchQuery
+    ? messages.filter((m) => m.text?.toLowerCase().includes(searchQuery.toLowerCase()))
+    : messages;
+
+  if (!conversation) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#0b141a]"
+        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d1d5db' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")` }}>
+        <div className="text-center p-8">
+          <div className="w-24 h-24 rounded-full bg-[#25D366]/20 flex items-center justify-center mx-auto mb-6">
+            <svg viewBox="0 0 60 60" className="w-14 h-14" fill="none">
+              <path fill="#25D366" d="M30 5C16.2 5 5 16.2 5 30c0 4.7 1.3 9.2 3.6 13L5 55l12.3-3.5A24.8 24.8 0 0030 55c13.8 0 25-11.2 25-25S43.8 5 30 5z"/>
+            </svg>
+          </div>
+          <h2 className="text-2xl font-light text-[#41525d] dark:text-[#8696a0] mb-2">WhatsApp Business</h2>
+          <p className="text-[#8696a0] text-sm max-w-xs leading-relaxed">
+            Select a conversation from the left to start messaging, or use templates to reach your customers
+          </p>
+          <div className="flex items-center gap-2 mt-4 justify-center text-xs text-[#8696a0]">
+            <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor">
+              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/>
+            </svg>
+            <span>End-to-end encrypted</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const { contact, status } = conversation;
+  const statusMenuItems = [
+    { label: 'Mark as Open', value: 'open', icon: CheckCheck, color: 'text-green-600' },
+    { label: 'Mark as Resolved', value: 'resolved', icon: CheckCheck, color: 'text-gray-600' },
+    { label: 'Mark as Pending', value: 'pending', icon: Clock, color: 'text-yellow-600' },
+  ];
+
+  return (
+    <div className="flex-1 flex h-full overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Chat Header */}
+        <div className="bg-[#f0f2f5] dark:bg-[#1f2c34] border-b border-gray-200 dark:border-[#2a3942] px-4 py-2.5 flex items-center gap-3">
+          <button onClick={() => dispatch(clearConversation())} className="p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors md:hidden">
+            <ArrowLeft size={18} className="text-[#54656f] dark:text-[#8696a0]" />
+          </button>
+
+          <button
+            onClick={() => setShowContactPanel(!showContactPanel)}
+            className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-80 transition-opacity"
+          >
+            <Avatar name={contact.name} isOnline={contact.isOnline} size="md" />
+            <div className="min-w-0 text-left">
+              <h3 className="font-semibold text-[#111b21] dark:text-[#e9edef] text-sm truncate">{contact.name}</h3>
+              <p className="text-xs text-[#8696a0]">
+                {contact.isOnline ? 'online' : contact.lastSeen ? `last seen recently` : contact.phone}
+              </p>
+            </div>
+          </button>
+
+          <div className="flex items-center gap-1">
+            {/* Status badge */}
+            <div className="relative">
+              <button
+                onClick={() => setShowStatusMenu(!showStatusMenu)}
+                className={`text-[10px] px-2 py-1 rounded-full font-medium flex items-center gap-1 ${
+                  status === 'open' ? 'bg-green-100 text-green-700' :
+                  status === 'resolved' ? 'bg-gray-100 text-gray-600' : 'bg-yellow-100 text-yellow-700'
+                }`}
+              >
+                {status} ▾
+              </button>
+              {showStatusMenu && (
+                <div className="absolute top-8 right-0 bg-white dark:bg-[#1f2c34] rounded-xl shadow-xl border border-gray-100 dark:border-[#2a3942] z-20 overflow-hidden min-w-[180px]">
+                  {statusMenuItems.map(({ label, value, icon: Icon, color }) => (
+                    <button
+                      key={value}
+                      onClick={() => {
+                        dispatch(updateConversationStatus({ id: selectedId!, status: value as any }));
+                        setShowStatusMenu(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-[#2a3942] text-sm ${color}`}
+                    >
+                      <Icon size={14} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button onClick={() => { setShowSearch(!showSearch); setSearchQuery(''); }} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Search">
+              <Search size={18} className="text-[#54656f] dark:text-[#8696a0]" />
+            </button>
+            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Video Call">
+              <Video size={18} className="text-[#54656f] dark:text-[#8696a0]" />
+            </button>
+            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Voice Call">
+              <Phone size={18} className="text-[#54656f] dark:text-[#8696a0]" />
+            </button>
+            <button onClick={() => setShowContactPanel(!showContactPanel)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Contact Info">
+              <Info size={18} className={showContactPanel ? 'text-[#25D366]' : 'text-[#54656f] dark:text-[#8696a0]'} />
+            </button>
+            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="More">
+              <MoreVertical size={18} className="text-[#54656f] dark:text-[#8696a0]" />
+            </button>
+          </div>
+        </div>
+
+        {/* Search bar */}
+        {showSearch && (
+          <div className="bg-white dark:bg-[#1f2c34] px-4 py-2 border-b border-gray-200 dark:border-[#2a3942] flex items-center gap-2">
+            <Search size={16} className="text-gray-400 dark:text-[#667781]" />
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search in conversation..."
+              className="flex-1 text-sm outline-none text-[#111b21] dark:text-[#e9edef] bg-transparent"
+            />
+            {searchQuery && <span className="text-xs text-gray-500 dark:text-[#8696a0]">{filteredMessages.length} results</span>}
+          </div>
+        )}
+
+        {/* Messages Area */}
+        <div
+          ref={messagesAreaRef}
+          className="flex-1 overflow-y-auto py-4 space-y-0.5 messages-area"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Crect width='80' height='80' fill='%23e5ddd5'/%3E%3Ccircle cx='10' cy='10' r='2' fill='%23d4c9be' opacity='0.5'/%3E%3C/svg%3E")`,
+            backgroundColor: '#efeae2',
+          }}
+        >
+          {messagesLoading && messages.length === 0 ? (
+            <div className="flex justify-center pt-8">
+              <div className="w-6 h-6 border-2 border-[#25D366] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            filteredMessages.map((message, index) => (
+              <div key={message.id} id={`msg-${message.id}`}>
+                {shouldShowDateSeparator(filteredMessages, index) && (
+                  <div className="flex justify-center my-3">
+                    <span className="bg-white dark:bg-[#1f2c34] text-gray-500 dark:text-[#8696a0] text-xs px-3 py-1 rounded-full shadow-sm border border-gray-100 dark:border-[#2a3942]">
+                      {formatDateSeparator(message.timestamp)}
+                    </span>
+                  </div>
+                )}
+                <MessageBubble
+                  message={message}
+                  isFirst={
+                    index === 0 ||
+                    filteredMessages[index - 1].isOutgoing !== message.isOutgoing
+                  }
+                  onQuoteClick={handleQuoteClick}
+                  onReply={setReplyToMessage}
+                />
+              </div>
+            ))
+          )}
+
+          {/* Typing indicator */}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <MessageInput
+          onSend={handleSend}
+          replyTo={replyToMessage}
+          onCancelReply={() => setReplyToMessage(null)}
+        />
+      </div>
+
+      {showContactPanel && conversation && (
+        <ContactPanel conversation={conversation} onClose={() => setShowContactPanel(false)} />
+      )}
+
+      {referencedMsgId && (
+        <ReferencedMessageModal
+          messageId={referencedMsgId}
+          onClose={() => setReferencedMsgId(null)}
+        />
+      )}
+    </div>
+  );
+}

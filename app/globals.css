@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+/* ── Tailwind v4: class-based dark mode ──────────────────────────────────── */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --wp-green: #25D366;
+  --wp-dark-green: #075E54;
+  --wp-teal: #128C7E;
+  --wp-blue: #34B7F1;
+  --wp-chat-bg: #efeae2;
+  --wp-sidebar-bg: #ffffff;
+  --wp-header-bg: #f0f2f5;
+  --wp-text-primary: #111b21;
+  --wp-text-secondary: #54656f;
+  --wp-text-muted: #8696a0;
+  --wp-msg-out: #d9fdd3;
+  --wp-msg-in: #ffffff;
+  --wp-panel: #ffffff;
+  --wp-border: #e9edef;
+}
+
+.dark {
+  --wp-chat-bg: #0b141a;
+  --wp-sidebar-bg: #111b21;
+  --wp-header-bg: #1f2c34;
+  --wp-text-primary: #e9edef;
+  --wp-text-secondary: #8696a0;
+  --wp-text-muted: #667781;
+  --wp-msg-out: #005c4b;
+  --wp-msg-in: #1f2c34;
+  --wp-panel: #1f2c34;
+  --wp-border: #2a3942;
+}
+
+@theme inline {
+  --color-wp-green: #25D366;
+  --color-wp-dark: #075E54;
+  --color-wp-teal: #128C7E;
+  --color-wp-blue: #34B7F1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--wp-header-bg);
+  color: var(--wp-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+/* WhatsApp chat background pattern */
+.chat-bg {
+  background-color: var(--wp-chat-bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cg opacity='0.05'%3E%3Cpath fill='%23111b21' d='M20 20h360v360H20z' /%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Message bubble tail */
+.msg-out::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -8px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid var(--wp-msg-out);
+  border-bottom: 8px solid transparent;
+}
+
+.msg-in::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 0;
+  height: 0;
+  border-right: 8px solid var(--wp-msg-in);
+  border-bottom: 8px solid transparent;
+}
+
+/* Smooth transitions */
+.transition-all {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Line clamp utility */
+.line-clamp-4 {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Animation */
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(37, 211, 102, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(37, 211, 102, 0); }
+}
+
+.online-pulse {
+  animation: pulse-ring 2s infinite;
+}
+
+/* Gradient backgrounds */
+.gradient-green {
+  background: linear-gradient(135deg, #075E54 0%, #25D366 100%);
+}
+
+/* Dark mode: override inline chat background */
+.dark .messages-area {
+  background-color: #0b141a !important;
+  background-image: none !important;
+}
+

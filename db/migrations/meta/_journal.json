@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1778428347033,
+      "tag": "0000_yielding_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778428899883,
+      "tag": "0001_conscious_piledriver",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778564574408,
+      "tag": "0002_sloppy_azazel",
+      "breakpoints": true
+    }
+  ]
+}
