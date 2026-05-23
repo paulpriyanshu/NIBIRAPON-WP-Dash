@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   // Log raw payload immediately before any processing — ensures nothing is lost
   try {
     await db.insert(webhookEvents).values({
-      type: 'raw',
+      type: 'other',
       payload: rawBody,
       processed: false,
     });

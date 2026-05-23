@@ -846,7 +846,7 @@ export default function TemplatesPage() {
                   : 'text-gray-500 dark:text-[#8696a0] hover:bg-gray-100 dark:hover:bg-[#2a3942]'
               }`}
             >
-              {t === 'templates' ? 'Templates' : 'Send History'}
+              {t === 'templates' ? 'Templates' : 'Recents'}
             </button>
           ))}
         </div>
