@@ -8,6 +8,8 @@ import {
 import { eq, and, sql } from 'drizzle-orm';
 import { verifyWebhook } from '@/lib/whatsapp-api';
 
+export const maxDuration = 60;
+
 // ─── GET: Webhook verification ────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
