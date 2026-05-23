@@ -36,6 +36,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'ok' });
   }
 
+  // Log raw payload immediately before any processing — ensures nothing is lost
+  try {
+    await db.insert(webhookEvents).values({
+      type: 'raw',
+      payload: rawBody,
+      processed: false,
+    });
+  } catch { /* ignore — don't let logging block processing */ }
+
   try {
     await processWebhookPayload(rawBody);
   } catch (err: any) {

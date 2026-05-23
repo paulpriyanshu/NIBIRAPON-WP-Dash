@@ -36,7 +36,8 @@ export default function ChatWindow() {
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesAreaRef = useRef<HTMLDivElement>(null);
-  const dispatch2 = useAppDispatch();
+  const prevConvIdRef = useRef<string | null>(null);
+  const prevMsgCountRef = useRef(0);
 
   useEffect(() => {
     if (selectedId) {
@@ -48,27 +49,46 @@ export default function ChatWindow() {
   // Poll for new incoming messages every 3 seconds; also poll immediately on tab focus
   useEffect(() => {
     if (!selectedId) return;
+    // Capture stable snapshot of latest timestamp so the interval doesn't recreate on every message
+    const getLatestTs = () => {
+      const msgs = messagesAreaRef.current
+        ? Array.from(messagesAreaRef.current.querySelectorAll('[data-ts]')).map(
+            (el) => parseInt((el as HTMLElement).dataset.ts || '0')
+          )
+        : [];
+      return msgs.length ? Math.max(...msgs) : 0;
+    };
     const poll = async () => {
-      const latestTs = messages.length > 0 ? Math.max(...messages.map((m) => m.timestamp)) : 0;
-      const result = await dispatch(pollMessages({ conversationId: selectedId, after: latestTs })).unwrap();
-      // Bubble each new message up to the conversations list so it reorders to the top
-      if (result.messages.length > 0) {
-        const latest = result.messages.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
-        dispatch(addMessage(latest));
-      }
+      try {
+        const latestTs = getLatestTs();
+        const result = await dispatch(pollMessages({ conversationId: selectedId, after: latestTs })).unwrap();
+        if (result.messages.length > 0) {
+          const latest = result.messages.reduce((a: any, b: any) => (a.timestamp > b.timestamp ? a : b));
+          dispatch(addMessage(latest));
+        }
+      } catch { /* ignore */ }
     };
     const interval = setInterval(poll, 3000);
-    const onFocus = () => poll();
+    const onFocus = () => { if (document.visibilityState === 'visible') poll(); };
     document.addEventListener('visibilitychange', onFocus);
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [selectedId, dispatch, messages]);
+  }, [selectedId, dispatch]);
 
+  // Scroll to bottom: instant on conversation switch, smooth only for new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const el = messagesEndRef.current;
+    if (!el) return;
+    const isConvSwitch = prevConvIdRef.current !== selectedId;
+    const isNewMessage = !isConvSwitch && messages.length > prevMsgCountRef.current;
+    prevConvIdRef.current = selectedId ?? null;
+    prevMsgCountRef.current = messages.length;
+    if (isConvSwitch || isNewMessage) {
+      el.scrollIntoView({ behavior: isConvSwitch ? 'instant' : 'smooth' });
+    }
+  }, [messages, selectedId]);
 
   const handleQuoteClick = useCallback((msgId: string) => {
     const el = document.getElementById(`msg-${msgId}`);
@@ -163,8 +183,8 @@ export default function ChatWindow() {
   ];
 
   return (
-    <div className="flex-1 flex h-full overflow-hidden">
-      <div className="flex-1 flex flex-col min-w-0">
+    <div className="relative flex-1 flex h-full overflow-hidden" style={{ height: '100dvh', maxHeight: '100dvh' }}>
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Chat Header */}
         <div className="bg-[#f0f2f5] dark:bg-[#1f2c34] border-b border-gray-200 dark:border-[#2a3942] px-4 py-2.5 flex items-center gap-3">
           <button onClick={() => dispatch(clearConversation())} className="p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors md:hidden">
@@ -184,7 +204,7 @@ export default function ChatWindow() {
             </div>
           </button>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5 md:gap-1">
             {/* Status badge */}
             <div className="relative">
               <button
@@ -218,16 +238,17 @@ export default function ChatWindow() {
             <button onClick={() => { setShowSearch(!showSearch); setSearchQuery(''); }} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Search">
               <Search size={18} className="text-[#54656f] dark:text-[#8696a0]" />
             </button>
-            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Video Call">
+            {/* Hide call buttons on mobile — they're decorative */}
+            <button className="hidden md:flex p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Video Call">
               <Video size={18} className="text-[#54656f] dark:text-[#8696a0]" />
             </button>
-            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Voice Call">
+            <button className="hidden md:flex p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Voice Call">
               <Phone size={18} className="text-[#54656f] dark:text-[#8696a0]" />
             </button>
             <button onClick={() => setShowContactPanel(!showContactPanel)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Contact Info">
               <Info size={18} className={showContactPanel ? 'text-[#25D366]' : 'text-[#54656f] dark:text-[#8696a0]'} />
             </button>
-            <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="More">
+            <button className="hidden md:flex p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="More">
               <MoreVertical size={18} className="text-[#54656f] dark:text-[#8696a0]" />
             </button>
           </div>
@@ -263,7 +284,7 @@ export default function ChatWindow() {
             </div>
           ) : (
             filteredMessages.map((message, index) => (
-              <div key={message.id} id={`msg-${message.id}`}>
+              <div key={message.id} id={`msg-${message.id}`} data-ts={message.timestamp}>
                 {shouldShowDateSeparator(filteredMessages, index) && (
                   <div className="flex justify-center my-3">
                     <span className="bg-white dark:bg-[#1f2c34] text-gray-500 dark:text-[#8696a0] text-xs px-3 py-1 rounded-full shadow-sm border border-gray-100 dark:border-[#2a3942]">
@@ -296,7 +317,9 @@ export default function ChatWindow() {
       </div>
 
       {showContactPanel && conversation && (
-        <ContactPanel conversation={conversation} onClose={() => setShowContactPanel(false)} />
+        <div className="absolute inset-0 z-30 md:static md:z-auto flex">
+          <ContactPanel conversation={conversation} onClose={() => setShowContactPanel(false)} />
+        </div>
       )}
 
       {referencedMsgId && (
