@@ -71,14 +71,16 @@ export default function ConversationList() {
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-[#111b21] border-r border-gray-200 dark:border-[#2a3942]">
-      {/* Header */}
+      {/* Header — full brand on desktop, buttons-only on mobile (top bar already shows brand) */}
       <div className="px-4 py-3 bg-[#f0f2f5] dark:bg-[#1f2c34] flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <div className="w-9 h-9 rounded-full bg-[#25D366] flex items-center justify-center">
             <span className="text-white text-xs font-bold">NB</span>
           </div>
           <span className="font-semibold text-[#111b21] dark:text-[#e9edef] text-sm">Nibirapon Business</span>
         </div>
+        {/* On mobile show a title instead of the avatar */}
+        <span className="md:hidden font-semibold text-[#111b21] dark:text-[#e9edef] text-base">Chats</span>
         <div className="flex items-center gap-1">
           <button onClick={() => setShowNewChat(true)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="New Chat">
             <MessageSquarePlus size={18} className="text-[#54656f] dark:text-[#8696a0]" />

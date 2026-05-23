@@ -5,6 +5,7 @@ import { fetchTemplates } from '@/store/slices/templatesSlice';
 import { Template } from '@/types';
 import { CheckCircle2, Clock, XCircle, Plus, Send, X, Phone, AlertCircle, ShoppingBag, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
 import CreateTemplateModal from './CreateTemplateModal';
+import TemplateHistory from './templates/TemplateHistory';
 
 const MAX_PRODUCTS = 30;
 const MAX_SECTIONS = 10;
@@ -85,6 +86,20 @@ function UseTemplateModal({ template, onClose }: { template: Template; onClose: 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
       setResult({ ok: true, msg: 'Message sent successfully!' });
+      // Save to template history
+      fetch('/api/template-snapshots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          templateName: template.name,
+          language: template.language,
+          bodyParams: bodyValues.filter(Boolean),
+          headerParam: headerIsText ? headerText : '',
+          headerMediaUrl: headerIsMedia ? headerMediaUrl : '',
+          recipients: [phone.trim()],
+          source: 'template_tab',
+        }),
+      }).catch(() => {});
     } catch (err: any) {
       setResult({ ok: false, msg: err.message });
     } finally {
@@ -772,6 +787,7 @@ export default function TemplatesPage() {
   const [activeTemplate,  setActiveTemplate]  = useState<Template | null>(null);
   const [editTemplate,    setEditTemplate]    = useState<Template | null>(null);
   const [showCreate,      setShowCreate]      = useState(false);
+  const [tab,             setTab]             = useState<'templates' | 'history'>('templates');
 
   useEffect(() => {
     dispatch(fetchTemplates());
@@ -802,22 +818,44 @@ export default function TemplatesPage() {
         />
       )}
 
-      <div className="sticky top-0 z-10 bg-white dark:bg-[#111b21] border-b border-gray-200 dark:border-[#2a3942] px-6 py-4 flex items-center justify-between shadow-sm">
-        <div>
-          <h1 className="text-xl font-bold text-[#111b21] dark:text-[#e9edef]">Message Templates</h1>
-          <p className="text-sm text-gray-500 dark:text-[#8696a0]">{approved.length} approved • {pending.length} pending</p>
+      <div className="sticky top-0 z-10 bg-white dark:bg-[#111b21] border-b border-gray-200 dark:border-[#2a3942] px-6 py-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h1 className="text-xl font-bold text-[#111b21] dark:text-[#e9edef]">Message Templates</h1>
+            <p className="text-sm text-gray-500 dark:text-[#8696a0]">{approved.length} approved • {pending.length} pending</p>
+          </div>
+          {tab === 'templates' && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-wp-dark text-white text-sm font-medium rounded-xl hover:bg-[#064e45] transition-colors"
+            >
+              <Plus size={16} />
+              Create Template
+            </button>
+          )}
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-wp-dark text-white text-sm font-medium rounded-xl hover:bg-[#064e45] transition-colors"
-        >
-          <Plus size={16} />
-          Create Template
-        </button>
+        {/* Tabs */}
+        <div className="flex gap-1">
+          {(['templates', 'history'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                tab === t
+                  ? 'bg-wp-dark text-white'
+                  : 'text-gray-500 dark:text-[#8696a0] hover:bg-gray-100 dark:hover:bg-[#2a3942]'
+              }`}
+            >
+              {t === 'templates' ? 'Templates' : 'Send History'}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="p-6">
-        {loading ? (
+        {tab === 'history' ? (
+          <TemplateHistory />
+        ) : loading ? (
           <div className="flex justify-center py-20">
             <div className="w-8 h-8 border-2 border-wp-green border-t-transparent rounded-full animate-spin" />
           </div>

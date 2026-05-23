@@ -10,7 +10,7 @@ import ReferencedMessageModal from './ReferencedMessageModal';
 import Avatar from '@/components/ui/Avatar';
 import { formatDateSeparator, shouldShowDateSeparator, generateId } from '@/lib/utils';
 import {
-  Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, Tag, ArrowLeft, Layers
+  Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, ArrowLeft
 } from 'lucide-react';
 import { Message } from '@/types';
 import { fetchTemplates } from '@/store/slices/templatesSlice';
@@ -138,6 +138,20 @@ export default function ChatWindow() {
           })
         ).unwrap();
         dispatch(replaceMessage({ conversationId: selectedId, tempId, message: realMessage }));
+        // Auto-save template sends to history
+        if (type === 'template' && templateName) {
+          fetch('/api/template-snapshots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              templateName, language: 'en',
+              bodyParams: templateData?.bodyParams ?? [],
+              headerParam: '',
+              recipients: [conversation.contact.phone],
+              source: 'dm',
+            }),
+          }).catch(() => {});
+        }
       } catch (err) {
         console.error('Failed to send message:', err);
         dispatch(updateMessageStatusInConversation({ conversationId: selectedId, messageId: tempId, status: 'failed' }));
@@ -272,7 +286,7 @@ export default function ChatWindow() {
         {/* Messages Area */}
         <div
           ref={messagesAreaRef}
-          className="flex-1 overflow-y-auto py-4 space-y-0.5 messages-area"
+          className="flex-1 overflow-y-auto overflow-x-hidden py-4 space-y-0.5 messages-area"
           style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Crect width='80' height='80' fill='%23e5ddd5'/%3E%3Ccircle cx='10' cy='10' r='2' fill='%23d4c9be' opacity='0.5'/%3E%3C/svg%3E")`,
             backgroundColor: '#efeae2',

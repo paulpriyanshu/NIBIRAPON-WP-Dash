@@ -284,6 +284,27 @@ export const orders = pgTable('orders', {
   index('orders_created_idx').on(t.createdAt),
 ]);
 
+// ─── templateSnapshots ───────────────────────────────────────────────────────
+// Saved template send configurations — reusable, editable, duplicatable
+
+export const templateSnapshots = pgTable('template_snapshots', {
+  id:             uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  label:          text('label').notNull().default(''),          // user-given name
+  templateName:   text('template_name').notNull(),
+  language:       varchar('language', { length: 10 }).notNull().default('en'),
+  bodyParams:     jsonb('body_params').notNull().default(sql`'[]'::jsonb`),
+  headerParam:    text('header_param').notNull().default(''),
+  headerMediaUrl: text('header_media_url'),
+  recipients:     jsonb('recipients').notNull().default(sql`'[]'::jsonb`), // string[]
+  sentCount:      integer('sent_count').notNull().default(0),
+  source:         text('source').notNull().default('dm'),       // 'dm' | 'template_tab'
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('template_snapshots_name_idx').on(t.templateName),
+  index('template_snapshots_created_idx').on(t.createdAt),
+]);
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const contactsRelations = relations(contacts, ({ many }) => ({
