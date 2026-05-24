@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { contacts, conversations, messages, messageStatusLog, leads } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, MPMSection } from '@/lib/whatsapp-api';
+import { normalizePhone } from '@/lib/utils';
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'to and templateName are required' }, { status: 400 });
     }
 
-    const phone = String(to).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    const phone = normalizePhone(String(to));
     if (phone.length < 10) {
       return NextResponse.json({ error: 'Invalid phone number' }, { status: 400 });
     }

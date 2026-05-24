@@ -6,7 +6,7 @@ import {
 } from '@/db/schema';
 import { eq, desc, sql, and, inArray, gt } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, MPMSection } from '@/lib/whatsapp-api';
-// import { normalizePhone } from '@/lib/utils';
+import { normalizePhone } from '@/lib/utils';
 
 export const maxDuration = 300;
 
@@ -117,8 +117,7 @@ export async function POST(req: NextRequest) {
   }
 
   const phones = recipients
-    // .map((p: string) => normalizePhone(p))   // uncomment to auto-prefix Indian 10-digit numbers
-    .map((p: string) => p.replace(/[\s\-\(\)\+]/g, ''))
+    .map((p: string) => normalizePhone(p))
     .filter((p: string) => p.length >= 10);
 
   if (phones.length === 0) {

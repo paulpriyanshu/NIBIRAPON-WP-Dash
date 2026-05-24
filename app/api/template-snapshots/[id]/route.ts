@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { templateSnapshots, broadcastCampaigns, broadcastRecipients, contacts, conversations, messages, messageStatusLog, leads } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { sendRichTemplateMessage } from '@/lib/whatsapp-api';
+import { normalizePhone } from '@/lib/utils';
 
 export const maxDuration = 300;
 
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // ── Resend (SSE) ─────────────────────────────────────────────────────────────
-  const phones: string[] = overrideRecipients ?? (snap.recipients as string[]);
+  const phones: string[] = (overrideRecipients ?? (snap.recipients as string[])).map(normalizePhone);
   if (phones.length === 0) return NextResponse.json({ error: 'No recipients' }, { status: 400 });
 
   const bodyParams  = (snap.bodyParams  as string[]) || [];
