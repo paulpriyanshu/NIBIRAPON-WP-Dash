@@ -9,7 +9,7 @@ import {
   Megaphone, Trash2, RefreshCw, X, AlertCircle,
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
-import { BroadcastHistorySkeleton } from '@/components/ui/Skeletons';
+import { BroadcastHistorySkeleton, TemplateGridSkeleton } from '@/components/ui/Skeletons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -224,10 +224,12 @@ function LiveProgressScreen({
 // ─── Step 1: Template Selector ────────────────────────────────────────────────
 function StepTemplate({
   templates,
+  loading,
   selected,
   onSelect,
 }: {
   templates: Template[];
+  loading: boolean;
   selected: Template | null;
   onSelect: (t: Template) => void;
 }) {
@@ -274,7 +276,10 @@ function StepTemplate({
       </div>
 
       <div className="flex-1 overflow-y-auto divide-y divide-gray-50 dark:divide-[#2a3942]">
-        {filtered.length === 0 && (
+        {loading && templates.length === 0 && (
+          <div className="p-4"><TemplateGridSkeleton count={4} /></div>
+        )}
+        {!loading && filtered.length === 0 && (
           <div className="flex flex-col items-center justify-center h-40 text-gray-400 dark:text-[#667781]">
             <Layers size={32} className="mb-2 opacity-30" />
             <p className="text-sm">No approved templates found</p>
@@ -1370,7 +1375,7 @@ export default function BroadcastPage() {
                       <p className="text-xs text-gray-400 dark:text-[#667781]">Only approved templates can be used for broadcast</p>
                     </div>
                     <div className="flex-1 overflow-hidden">
-                      <StepTemplate templates={templates} selected={selectedTemplate} onSelect={(t) => {
+                      <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} onSelect={(t) => {
                         if (t.id !== selectedTemplate?.id) {
                           setParams({});
                           setHeaderMediaUrl('');
