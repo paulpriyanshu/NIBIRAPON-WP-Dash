@@ -44,6 +44,7 @@ async function graphRequest(method: string, endpoint: string, body?: object) {
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15_000), // fail fast if Meta API stalls
   });
   const data = await res.json();
   if (!res.ok) {

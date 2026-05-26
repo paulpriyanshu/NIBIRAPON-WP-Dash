@@ -102,7 +102,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       let sentCount = 0, failedCount = 0;
 
       for (const phone of phones) {
-        await new Promise((r) => setTimeout(r, 3000 + Math.floor(Math.random() * 3001)));
+        await new Promise((r) => setTimeout(r, 1000 + Math.floor(Math.random() * 1001)));
         const now = new Date();
         try {
           let waMessageId: string | null = null;

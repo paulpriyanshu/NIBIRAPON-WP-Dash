@@ -161,9 +161,8 @@ export async function POST(req: NextRequest) {
       let failedCount = 0;
 
       for (const phone of phones) {
-        // Random 3–6 second delay between sends
-        const delay = 3000 + Math.floor(Math.random() * 3001);
-        await new Promise((r) => setTimeout(r, delay));
+        // 1–2 second delay between sends (respects WhatsApp rate limits)
+        await new Promise((r) => setTimeout(r, 1000 + Math.floor(Math.random() * 1001)));
 
         const now = new Date();
         try {
