@@ -1,12 +1,24 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { AnalyticsOverview, TimeSeriesData, ConversionFunnelData, StatusBreakdown, Lead } from '@/types';
 
+export interface ActiveContact {
+  contactId: string;
+  name: string;
+  phone: string;
+  conversationId: string;
+  convStatus: string;
+  messageCount: number;
+  lastMessageAt: number;
+  lastMessageText: string;
+}
+
 interface AnalyticsState {
   overview: AnalyticsOverview | null;
   messagesOverTime: TimeSeriesData[];
   conversionFunnel: ConversionFunnelData[];
   statusBreakdown: StatusBreakdown[];
   leads: Lead[];
+  activeContacts: ActiveContact[];
   dateRange: '7d' | '30d' | '90d';
   loading: boolean;
   error: string | null;
@@ -18,6 +30,7 @@ const initialState: AnalyticsState = {
   conversionFunnel: [],
   statusBreakdown: [],
   leads: [],
+  activeContacts: [],
   dateRange: '30d',
   loading: false,
   error: null,
@@ -50,6 +63,7 @@ const analyticsSlice = createSlice({
         state.conversionFunnel = action.payload.conversionFunnel;
         state.statusBreakdown = action.payload.statusBreakdown;
         state.leads = action.payload.leads;
+        state.activeContacts = action.payload.activeContacts || [];
       })
       .addCase(fetchAnalytics.rejected, (state, action) => {
         state.loading = false;

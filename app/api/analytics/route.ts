@@ -195,12 +195,49 @@ export async function GET(req: NextRequest) {
       },
     }));
 
+    // ── Active contacts: people who replied/messaged within range ───────────
+    const activeContactsResult = await db.execute(sql`
+      SELECT
+        c.id AS contact_id,
+        c.name,
+        c.phone,
+        cv.id AS conversation_id,
+        cv.status AS conv_status,
+        COUNT(m.id)::int AS message_count,
+        MAX(m.sent_at) AS last_message_at,
+        (
+          SELECT text FROM messages
+          WHERE conversation_id = cv.id AND is_outgoing = false
+          ORDER BY sent_at DESC LIMIT 1
+        ) AS last_message_text
+      FROM messages m
+      JOIN conversations cv ON m.conversation_id = cv.id
+      JOIN contacts c ON cv.contact_id = c.id
+      WHERE m.is_outgoing = false
+        AND m.sent_at >= ${since}
+      GROUP BY c.id, c.name, c.phone, cv.id, cv.status
+      ORDER BY MAX(m.sent_at) DESC
+      LIMIT 50
+    `);
+
+    const activeContacts = (activeContactsResult.rows || []).map((r: any) => ({
+      contactId: r.contact_id,
+      name: r.name,
+      phone: r.phone,
+      conversationId: r.conversation_id,
+      convStatus: r.conv_status,
+      messageCount: r.message_count,
+      lastMessageAt: new Date(r.last_message_at).getTime(),
+      lastMessageText: r.last_message_text || '',
+    }));
+
     return NextResponse.json({
       overview,
       messagesOverTime,
       conversionFunnel,
       statusBreakdown,
       leads: leadsFormatted,
+      activeContacts,
     });
   } catch (err: any) {
     console.error('[Analytics API] Error:', err);

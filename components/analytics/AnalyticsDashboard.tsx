@@ -1,18 +1,20 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '@/hooks/redux';
-import { fetchAnalytics, setDateRange } from '@/store/slices/analyticsSlice';
+import { fetchAnalytics, setDateRange, ActiveContact } from '@/store/slices/analyticsSlice';
 import MetricsCard from './MetricsCard';
 import LeadsTable from './LeadsTable';
+import Avatar from '@/components/ui/Avatar';
 import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, FunnelChart, Funnel, LabelList,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
   Users, MessageSquare, Send, Eye, TrendingUp, Clock,
-  CheckCircle, UserCheck, DollarSign, BarChart2, RefreshCw, Download
+  CheckCircle, DollarSign, RefreshCw, Download, ExternalLink, MessageCircle,
 } from 'lucide-react';
 import { AnalyticsSkeleton } from '@/components/ui/Skeletons';
+import { formatDistanceToNow } from 'date-fns';
 
 const COLORS = {
   sent: '#075E54',
@@ -37,10 +39,11 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export default function AnalyticsDashboard() {
+export default function AnalyticsDashboard({ onNavigateToChat = () => {} }: { onNavigateToChat?: (conversationId: string) => void }) {
   const dispatch = useAppDispatch();
-  const { overview, messagesOverTime, conversionFunnel, statusBreakdown, leads, dateRange, loading } =
+  const { overview, messagesOverTime, conversionFunnel, statusBreakdown, leads, activeContacts, dateRange, loading } =
     useAppSelector((s) => s.analytics);
+  const [expandedContact, setExpandedContact] = useState<string | null>(null);
 
   useEffect(() => {
     dispatch(fetchAnalytics(dateRange));
@@ -349,6 +352,73 @@ export default function AnalyticsDashboard() {
             ))}
           </div>
         </div>
+
+        {/* Active Contacts — people who replied / chatted within the period */}
+        {activeContacts.length > 0 && (
+          <div className="bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-[#2a3942] flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-[#111b21] dark:text-[#e9edef]">Active Contacts</h3>
+                <p className="text-xs text-gray-400 dark:text-[#667781] mt-0.5">
+                  {activeContacts.length} contact{activeContacts.length !== 1 ? 's' : ''} replied or messaged in this period
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 text-[#25D366]">
+                <MessageCircle size={16} />
+                <span className="text-sm font-semibold">{activeContacts.reduce((s, c) => s + c.messageCount, 0)} messages</span>
+              </div>
+            </div>
+
+            <div className="divide-y divide-gray-50 dark:divide-[#2a3942]">
+              {activeContacts.map((contact) => {
+                const isOpen = expandedContact === contact.contactId;
+                return (
+                  <div key={contact.contactId}>
+                    <button
+                      onClick={() => setExpandedContact(isOpen ? null : contact.contactId)}
+                      className="w-full flex items-center gap-3 px-6 py-3 hover:bg-gray-50 dark:hover:bg-[#1f2c34] transition-colors text-left"
+                    >
+                      <Avatar name={contact.name} size="sm" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-[#111b21] dark:text-[#e9edef] truncate">{contact.name}</p>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${
+                            contact.convStatus === 'open'
+                              ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                              : 'bg-gray-100 dark:bg-[#2a3942] text-gray-500 dark:text-[#8696a0]'
+                          }`}>
+                            {contact.convStatus}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400 dark:text-[#667781] truncate">{contact.lastMessageText || contact.phone}</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs font-semibold text-[#25D366]">{contact.messageCount} msg{contact.messageCount !== 1 ? 's' : ''}</p>
+                        <p className="text-[10px] text-gray-400 dark:text-[#667781]">
+                          {formatDistanceToNow(new Date(contact.lastMessageAt), { addSuffix: true })}
+                        </p>
+                      </div>
+                    </button>
+
+                    {isOpen && (
+                      <div className="px-6 pb-3 bg-gray-50 dark:bg-[#0b141a] flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500 dark:text-[#8696a0] font-mono">{contact.phone}</p>
+                        </div>
+                        <button
+                          onClick={() => onNavigateToChat(contact.conversationId)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#075E54] hover:bg-[#064e45] text-white text-xs font-semibold rounded-lg transition-colors shrink-0"
+                        >
+                          <ExternalLink size={12} /> Open Chat
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Leads Table */}
         <LeadsTable leads={leads} />

@@ -1,7 +1,7 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAppDispatch } from '@/hooks/redux';
-import { fetchConversations } from '@/store/slices/conversationsSlice';
+import { fetchConversations, selectConversation } from '@/store/slices/conversationsSlice';
 import TopNav from './TopNav';
 import ConversationList from './chat/ConversationList';
 import ChatWindow from './chat/ChatWindow';
@@ -19,11 +19,15 @@ export default function Dashboard() {
   useEffect(() => {
     dispatch(fetchConversations());
 
-    // Poll for new conversations every 30s (in production: use WebSocket/SSE)
     const interval = setInterval(() => {
       dispatch(fetchConversations());
     }, 30000);
     return () => clearInterval(interval);
+  }, [dispatch]);
+
+  const handleNavigateToChat = useCallback((conversationId: string) => {
+    dispatch(selectConversation(conversationId));
+    setActiveTab('chat');
   }, [dispatch]);
 
   return (
@@ -42,7 +46,7 @@ export default function Dashboard() {
           </>
         )}
 
-        {activeTab === 'analytics' && <AnalyticsDashboard />}
+        {activeTab === 'analytics' && <AnalyticsDashboard onNavigateToChat={handleNavigateToChat} />}
         {activeTab === 'broadcast' && <BroadcastPage />}
         {activeTab === 'templates' && <TemplatesPage />}
         {activeTab === 'settings' && <SettingsPage />}
