@@ -12,6 +12,7 @@ import {
   Users, MessageSquare, Send, Eye, TrendingUp, Clock,
   CheckCircle, UserCheck, DollarSign, BarChart2, RefreshCw, Download
 } from 'lucide-react';
+import { AnalyticsSkeleton } from '@/components/ui/Skeletons';
 
 const COLORS = {
   sent: '#075E54',
@@ -52,14 +53,7 @@ export default function AnalyticsDashboard() {
   ];
 
   if (loading && !overview) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 border-3 border-[#25D366] border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-500 text-sm">Loading analytics...</p>
-        </div>
-      </div>
-    );
+    return <AnalyticsSkeleton />;
   }
 
   if (!overview) return null;

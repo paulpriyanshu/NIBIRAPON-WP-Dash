@@ -6,6 +6,7 @@ import { Template } from '@/types';
 import { CheckCircle2, Clock, XCircle, Plus, Send, X, Phone, AlertCircle, ShoppingBag, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
 import CreateTemplateModal from './CreateTemplateModal';
 import TemplateHistory from './templates/TemplateHistory';
+import { TemplateGridSkeleton } from '@/components/ui/Skeletons';
 
 const MAX_PRODUCTS = 30;
 const MAX_SECTIONS = 10;
@@ -856,9 +857,7 @@ export default function TemplatesPage() {
         {tab === 'history' ? (
           <TemplateHistory />
         ) : loading ? (
-          <div className="flex justify-center py-20">
-            <div className="w-8 h-8 border-2 border-wp-green border-t-transparent rounded-full animate-spin" />
-          </div>
+          <TemplateGridSkeleton count={6} />
         ) : (
           <>
             {approved.length > 0 && (

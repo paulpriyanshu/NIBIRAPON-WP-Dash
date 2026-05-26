@@ -5,12 +5,13 @@ import { selectConversation, setSearchQuery, fetchConversations } from '@/store/
 import ConversationItem from './ConversationItem';
 import NewChatModal from './NewChatModal';
 import { Search, Filter, MessageSquarePlus, Users, Tag, MoreVertical, Archive, RefreshCw } from 'lucide-react';
+import { ConversationListSkeleton } from '@/components/ui/Skeletons';
 
 type FilterTab = 'all' | 'open' | 'resolved' | 'pending';
 
 export default function ConversationList() {
   const dispatch = useAppDispatch();
-  const { conversations, selectedId, searchQuery } = useAppSelector((s) => s.conversations);
+  const { conversations, selectedId, searchQuery, loading } = useAppSelector((s) => s.conversations);
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [showNewChat, setShowNewChat] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -149,7 +150,9 @@ export default function ConversationList() {
 
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {filtered.length === 0 ? (
+        {loading && conversations.length === 0 ? (
+          <ConversationListSkeleton count={9} />
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-gray-400 dark:text-[#667781]">
             <MessageSquarePlus size={32} className="mb-2 opacity-50" />
             <p className="text-sm">{searchQuery ? 'No conversations found' : 'No conversations yet'}</p>

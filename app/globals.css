@@ -40,6 +40,10 @@
   --color-wp-blue: #34B7F1;
 }
 
+@keyframes shimmer {
+  100% { transform: translateX(200%); }
+}
+
 * {
   box-sizing: border-box;
 }

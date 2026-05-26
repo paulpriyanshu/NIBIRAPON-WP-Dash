@@ -8,6 +8,7 @@ import MessageInput from './MessageInput';
 import ContactPanel from './ContactPanel';
 import ReferencedMessageModal from './ReferencedMessageModal';
 import Avatar from '@/components/ui/Avatar';
+import { MessagesSkeleton } from '@/components/ui/Skeletons';
 import { formatDateSeparator, shouldShowDateSeparator, generateId } from '@/lib/utils';
 import {
   Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, ArrowLeft
@@ -293,9 +294,7 @@ export default function ChatWindow() {
           }}
         >
           {messagesLoading && messages.length === 0 ? (
-            <div className="flex justify-center pt-8">
-              <div className="w-6 h-6 border-2 border-[#25D366] border-t-transparent rounded-full animate-spin" />
-            </div>
+            <MessagesSkeleton />
           ) : (
             filteredMessages.map((message, index) => (
               <div key={message.id} id={`msg-${message.id}`} data-ts={message.timestamp}>

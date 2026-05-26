@@ -99,15 +99,25 @@ export default function Sidebar() {
           </button>
 
           {/* User info */}
-          <div className="flex items-center gap-3 px-2 py-2 mt-1">
-            <div className="w-8 h-8 rounded-full bg-[#25D366]/30 border border-[#25D366]/50 flex items-center justify-center flex-shrink-0">
-              <span className="text-white text-[10px] font-bold">{initials}</span>
+          {me === null ? (
+            <div className="flex items-center gap-3 px-2 py-2 mt-1">
+              <div className="w-8 h-8 rounded-full bg-white/10 animate-pulse shrink-0" />
+              <div className="hidden lg:flex flex-col gap-1.5 flex-1 min-w-0">
+                <div className="h-2.5 bg-white/10 animate-pulse rounded w-24" />
+                <div className="h-2 bg-white/10 animate-pulse rounded w-14" />
+              </div>
             </div>
-            <div className="hidden lg:block min-w-0">
-              <p className="text-white text-xs font-semibold truncate">{displayName}</p>
-              <p className="text-[#25D366] text-[10px] truncate">{displaySub}</p>
+          ) : (
+            <div className="flex items-center gap-3 px-2 py-2 mt-1">
+              <div className="w-8 h-8 rounded-full bg-[#25D366]/30 border border-[#25D366]/50 flex items-center justify-center flex-shrink-0">
+                <span className="text-white text-[10px] font-bold">{initials}</span>
+              </div>
+              <div className="hidden lg:block min-w-0">
+                <p className="text-white text-xs font-semibold truncate">{displayName}</p>
+                <p className="text-[#25D366] text-[10px] truncate">{displaySub}</p>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </aside>
 

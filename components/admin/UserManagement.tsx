@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, Edit2, Check, X, ShieldCheck, User, Eye, EyeOff, Loader2, UserCog } from 'lucide-react';
+import { Plus, Trash2, Edit2, Check, X, ShieldCheck, User, Eye, EyeOff, UserCog } from 'lucide-react';
+import { UserRowSkeleton } from '@/components/ui/Skeletons';
 
 interface UserRow {
   id: string;
@@ -103,8 +104,25 @@ export default function UserManagement() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-40">
-        <Loader2 size={22} className="animate-spin text-[#25D366]" />
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-[#2a3942]">
+          <div className="h-5 w-36 bg-gray-200 dark:bg-[#2a3942] rounded animate-pulse" />
+          <div className="h-8 w-24 bg-gray-200 dark:bg-[#2a3942] rounded-lg animate-pulse" />
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-[#2a3942]">
+              {['User', 'Credentials', 'Role', 'Status', 'Actions'].map((h) => (
+                <th key={h} className="text-left px-6 py-3">
+                  <div className="h-2.5 w-16 bg-gray-200 dark:bg-[#2a3942] rounded animate-pulse" />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 5 }).map((_, i) => <UserRowSkeleton key={i} />)}
+          </tbody>
+        </table>
       </div>
     );
   }

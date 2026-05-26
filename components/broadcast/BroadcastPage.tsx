@@ -9,6 +9,7 @@ import {
   Megaphone, Trash2, RefreshCw, X, AlertCircle,
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
+import { BroadcastHistorySkeleton } from '@/components/ui/Skeletons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -867,11 +868,7 @@ function CampaignHistory({
     draft:     { icon: Sliders,      cls: 'text-gray-400',                            badge: 'bg-gray-100 text-gray-600' },
   };
 
-  if (loading) return (
-    <div className="flex justify-center py-12">
-      <div className="w-6 h-6 border-2 border-wp-green border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
+  if (loading) return <BroadcastHistorySkeleton count={3} />;
 
   if (campaigns.length === 0) return (
     <div className="flex flex-col items-center justify-center h-40 text-gray-400">

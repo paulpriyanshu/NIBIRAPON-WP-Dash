@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
 import { History, Send, Copy, Trash2, Edit2, Check, X, Plus, ChevronDown, ChevronUp, Loader2, Users } from 'lucide-react';
+import { TemplateHistorySkeleton } from '@/components/ui/Skeletons';
 
 interface Snapshot {
   id: string;
@@ -120,11 +121,7 @@ export default function TemplateHistory() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-40">
-        <Loader2 size={22} className="animate-spin text-[#25D366]" />
-      </div>
-    );
+    return <TemplateHistorySkeleton count={4} />;
   }
 
   if (snapshots.length === 0) {
