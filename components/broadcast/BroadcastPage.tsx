@@ -40,6 +40,7 @@ interface Campaign {
   bodyParams: string[];
   headerParams: string[];
   headerMediaUrl: string | null;
+  isMPMTemplate: boolean;
   mpmSections: { title: string; product_items: { product_retailer_id: string }[] }[] | null;
   thumbnailProductRetailerId: string | null;
   createdAt: string;
@@ -1380,6 +1381,19 @@ export default function BroadcastPage() {
     const tpl = templates.find((t) => t.name === data.templateName) || null;
     const paramMap: Record<string, string> = {};
     data.bodyParams.forEach((v, i) => { paramMap[`{{${i + 1}}}`] = v; });
+
+    const tplBodyText   = tpl?.components.find((c) => c.type === 'BODY')?.text || '';
+    const needsBodyParams = /\{\{\d+\}\}/.test(tplBodyText);
+    const hasBodyData   = data.bodyParams.some((v) => v.trim().length > 0);
+    const isMPMTemplate = tpl ? checkIsMPM(tpl) : false;
+
+    let targetStep = 0;
+    if (tpl) {
+      if (isMPMTemplate) targetStep = 1; // MPM sections can't come from inline edit
+      else if (needsBodyParams && !hasBodyData) targetStep = 1;
+      else targetStep = 3;
+    }
+
     setSelectedTemplate(tpl);
     setParams(paramMap);
     setHeaderMediaUrl(data.headerMediaUrl);
@@ -1389,16 +1403,25 @@ export default function BroadcastPage() {
     setThumbnailProductId('');
     setLiveProgress(null);
     setError('');
-    setStep(tpl ? 3 : 0);
+    setStep(targetStep);
     setTab('compose');
   }, [templates]);
 
   const handleRepeat = useCallback((campaign: Campaign) => {
     const tpl = templates.find((t) => t.name === campaign.templateName) || null;
 
-    // Restore body params as {{1}}→value map
+    // Restore body params: [[1]]→value, [[2]]→value, …
     const paramMap: Record<string, string> = {};
     (campaign.bodyParams || []).forEach((v, i) => { paramMap[`{{${i + 1}}}`] = v; });
+
+    // Restore header text param. handleSend reads params['{{1}}'] for the header
+    // component. If this template has a text header but no body params, bodyParams
+    // will be [] and headerParams[0] holds the value we need.
+    // Only set if body params didn't already fill {{1}} to avoid overwriting it.
+    const headerParamValue = (campaign.headerParams || [])[0] || '';
+    if (headerParamValue && !paramMap['{{1}}']) {
+      paramMap['{{1}}'] = headerParamValue;
+    }
 
     // Restore MPM sections from stored API format → UI draft format
     const restoredMpm: MPMSectionDraft[] =
@@ -1412,6 +1435,24 @@ export default function BroadcastPage() {
           }))
         : [{ title: '', productIds: '' }];
 
+    // Prefer the stored flag; fall back to live template check for old campaigns
+    const isMPMTemplate = campaign.isMPMTemplate ?? (tpl ? checkIsMPM(tpl) : false);
+    const hasMPMData    = restoredMpm.some((s) => s.productIds.trim().length > 0);
+    const hasBodyData   = Object.values(paramMap).some((v) => v.trim().length > 0);
+
+    // Detect whether the template needs params we don't have yet:
+    //   - MPM template with no restored sections → go to step 1 (fill params)
+    //   - Template has body placeholders but nothing was stored → go to step 1
+    //   - Otherwise jump straight to Preview & Send
+    const tplBodyText   = tpl?.components.find((c) => c.type === 'BODY')?.text || '';
+    const needsBodyParams = /\{\{\d+\}\}/.test(tplBodyText);
+    let targetStep = 0; // default: pick template
+    if (tpl) {
+      if (isMPMTemplate && !hasMPMData) targetStep = 1;
+      else if (needsBodyParams && !hasBodyData) targetStep = 1;
+      else targetStep = 3;
+    }
+
     setSelectedTemplate(tpl);
     setParams(paramMap);
     setHeaderMediaUrl(campaign.headerMediaUrl || '');
@@ -1421,8 +1462,7 @@ export default function BroadcastPage() {
     setCampaignName(`Repeat: ${campaign.name}`);
     setLiveProgress(null);
     setError('');
-    // Jump straight to Preview & Send if we have the template; else pick template first
-    setStep(tpl ? 3 : 0);
+    setStep(targetStep);
     setTab('compose');
   }, [templates]);
 
@@ -1486,6 +1526,12 @@ export default function BroadcastPage() {
       return hasThumb && hasSections;
     }
     if (step === 2) return phones.length > 0;
+    // Step 3: require all body-param slots filled
+    if (step === 3 && selectedTemplate) {
+      const body = selectedTemplate.components.find((c) => c.type === 'BODY');
+      const placeholders = body?.text ? extractPlaceholders(body.text) : [];
+      if (placeholders.some((ph) => !params[ph]?.trim())) return false;
+    }
     return true;
   };
 
@@ -1790,24 +1836,43 @@ export default function BroadcastPage() {
                   </div>
                 )}
 
-                {step === 3 && selectedTemplate && (
-                  <div className="bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] p-5 h-full overflow-hidden flex flex-col">
-                    <div className="mb-4">
-                      <h2 className="font-semibold text-[#111b21] dark:text-[#e9edef]">Preview & Send</h2>
-                      <p className="text-xs text-gray-400 dark:text-[#667781]">Review before sending — this cannot be undone</p>
+                {step === 3 && selectedTemplate && (() => {
+                  const body = selectedTemplate.components.find((c) => c.type === 'BODY');
+                  const emptyParams = (body?.text ? extractPlaceholders(body.text) : []).filter((ph) => !params[ph]?.trim());
+                  return (
+                    <div className="bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] p-5 h-full overflow-hidden flex flex-col">
+                      <div className="mb-4">
+                        <h2 className="font-semibold text-[#111b21] dark:text-[#e9edef]">Preview & Send</h2>
+                        <p className="text-xs text-gray-400 dark:text-[#667781]">Review before sending — this cannot be undone</p>
+                      </div>
+                      {emptyParams.length > 0 && (
+                        <div className="mb-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-xl px-4 py-3 flex items-start gap-2">
+                          <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                          <div className="flex-1">
+                            <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                              Missing parameters: {emptyParams.join(', ')}
+                            </p>
+                            <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                              Go back to{' '}
+                              <button onClick={() => setStep(1)} className="underline font-semibold">Fill Parameters</button>
+                              {' '}to enter them before sending.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex-1 overflow-hidden">
+                        <StepPreview
+                          template={selectedTemplate}
+                          params={params}
+                          headerMediaUrl={headerMediaUrl}
+                          phones={phones}
+                          campaignName={campaignName}
+                          onName={setCampaignName}
+                        />
+                      </div>
                     </div>
-                    <div className="flex-1 overflow-hidden">
-                      <StepPreview
-                        template={selectedTemplate}
-                        params={params}
-                        headerMediaUrl={headerMediaUrl}
-                        phones={phones}
-                        campaignName={campaignName}
-                        onName={setCampaignName}
-                      />
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
 

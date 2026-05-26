@@ -218,6 +218,7 @@ export const broadcastCampaigns = pgTable('broadcast_campaigns', {
   headerParams:     jsonb('header_params').default(sql`'[]'::jsonb`),
   bodyParams:       jsonb('body_params').notNull().default(sql`'[]'::jsonb`),
   headerMediaUrl:               text('header_media_url'),
+  isMPMTemplate:                boolean('is_mpm_template').notNull().default(false),
   mpmSections:                  jsonb('mpm_sections'),
   thumbnailProductRetailerId:   text('thumbnail_product_retailer_id'),
   totalRecipients:              integer('total_recipients').notNull().default(0),
