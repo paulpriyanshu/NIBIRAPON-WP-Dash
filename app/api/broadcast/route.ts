@@ -35,6 +35,31 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(campaign);
     }
 
+    // Template usage stats
+    const statsTemplate = searchParams.get('stats');
+    if (statsTemplate) {
+      const rows = await db
+        .select({
+          sentCount:     broadcastCampaigns.sentCount,
+          deliveredCount: broadcastCampaigns.deliveredCount,
+          readCount:     broadcastCampaigns.readCount,
+          createdAt:     broadcastCampaigns.createdAt,
+        })
+        .from(broadcastCampaigns)
+        .where(and(eq(broadcastCampaigns.templateName, statsTemplate), ne(broadcastCampaigns.status, 'draft')));
+      const totalSent      = rows.reduce((s, r) => s + r.sentCount, 0);
+      const totalDelivered = rows.reduce((s, r) => s + r.deliveredCount, 0);
+      const totalRead      = rows.reduce((s, r) => s + r.readCount, 0);
+      const sorted = [...rows].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return NextResponse.json({
+        timesUsed:    rows.length,
+        totalSent,
+        deliveryRate: totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : null,
+        readRate:     totalSent > 0 ? Math.round((totalRead / totalSent) * 100) : null,
+        lastUsedAt:   sorted[0]?.createdAt ?? null,
+      });
+    }
+
     // All campaigns list — filter by status if provided, otherwise exclude drafts
     const statusParam = searchParams.get('status');
     const campaigns = await db
@@ -137,6 +162,8 @@ export async function POST(req: NextRequest) {
       bodyParams,
       headerParams: headerParam ? [headerParam] : [],
       headerMediaUrl: headerMediaUrl || null,
+      mpmSections: isMPMTemplate ? mpmSections : null,
+      thumbnailProductRetailerId: isMPMTemplate ? thumbnailProductRetailerId : null,
       totalRecipients: phones.length,
       status: 'draft',
     }).returning();
@@ -157,6 +184,8 @@ export async function POST(req: NextRequest) {
     bodyParams,
     headerParams: headerParam ? [headerParam] : [],
     headerMediaUrl: headerMediaUrl || null,
+    mpmSections: isMPMTemplate ? mpmSections : null,
+    thumbnailProductRetailerId: isMPMTemplate ? thumbnailProductRetailerId : null,
     totalRecipients: phones.length,
     status: 'sending',
   }).returning();

@@ -6,7 +6,7 @@ import { Template } from '@/types';
 import {
   Send, ChevronRight, ChevronLeft, CheckCircle2, Clock, XCircle,
   Users, Layers, Sliders, Eye, History, Plus, Upload,
-  Megaphone, Trash2, RefreshCw, X, AlertCircle, Edit2, Bookmark, BookmarkCheck,
+  Megaphone, Trash2, RefreshCw, X, AlertCircle, Edit2,
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import { BroadcastHistorySkeleton, TemplateGridSkeleton } from '@/components/ui/Skeletons';
@@ -40,6 +40,8 @@ interface Campaign {
   bodyParams: string[];
   headerParams: string[];
   headerMediaUrl: string | null;
+  mpmSections: { title: string; product_items: { product_retailer_id: string }[] }[] | null;
+  thumbnailProductRetailerId: string | null;
   createdAt: string;
   recipients: { phone: string; status: string }[];
 }
@@ -214,6 +216,159 @@ function LiveProgressScreen({
             >
               New Campaign
             </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Template Preview Panel (right side of step 1) ───────────────────────────
+
+interface TemplateStats {
+  timesUsed: number;
+  totalSent: number;
+  deliveryRate: number | null;
+  readRate: number | null;
+  lastUsedAt: string | null;
+}
+
+function TemplatePreviewPanel({ template, stats, statsLoading }: {
+  template: Template;
+  stats: TemplateStats | null;
+  statsLoading: boolean;
+}) {
+  const body    = template.components.find((c) => c.type === 'BODY');
+  const header  = template.components.find((c) => c.type === 'HEADER');
+  const footer  = template.components.find((c) => c.type === 'FOOTER');
+  const buttons = template.components.find((c) => c.type === 'BUTTONS');
+  const isMPM   = checkIsMPM(template);
+  const isMedia = header && header.format !== 'TEXT' && header.format !== undefined;
+
+  const catColors: Record<string, string> = {
+    MARKETING:      'bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400',
+    UTILITY:        'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400',
+    AUTHENTICATION: 'bg-orange-100 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400',
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-4 space-y-4">
+      {/* Name + badges */}
+      <div>
+        <h3 className="font-bold text-sm text-[#111b21] dark:text-[#e9edef] break-words">
+          {template.name.replace(/_/g, ' ')}
+        </h3>
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${catColors[template.category] || 'bg-gray-100 dark:bg-[#2a3942] text-gray-600 dark:text-[#8696a0]'}`}>
+            {template.category.toLowerCase()}
+          </span>
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-100 dark:bg-[#2a3942] text-gray-600 dark:text-[#8696a0]">
+            {template.language.toUpperCase()}
+          </span>
+          {isMPM && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+              MPM
+            </span>
+          )}
+          {isMedia && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-teal-100 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400">
+              {header!.format}
+            </span>
+          )}
+          {buttons?.buttons && !isMPM && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-indigo-100 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400">
+              {buttons.buttons.length} button{buttons.buttons.length > 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* WhatsApp bubble preview */}
+      <div>
+        <p className="text-[10px] font-semibold text-gray-400 dark:text-[#667781] uppercase tracking-wide mb-2">Message Preview</p>
+        <div className="bg-[#e8f5e9] dark:bg-[#0d2a1a] rounded-2xl p-3">
+          <div className="bg-white dark:bg-[#1f2c34] rounded-xl shadow-sm p-3 space-y-1.5">
+            {isMedia && (
+              <div className="h-16 bg-gray-100 dark:bg-[#2a3942] rounded-lg flex items-center justify-center text-[10px] text-gray-400 dark:text-[#667781]">
+                {header!.format} Header
+              </div>
+            )}
+            {!isMedia && header?.text && (
+              <p className="text-xs font-bold text-[#111b21] dark:text-[#e9edef]">{header.text}</p>
+            )}
+            {body?.text && (
+              <p className="text-[11px] text-[#111b21] dark:text-[#e9edef] leading-relaxed whitespace-pre-wrap">{body.text}</p>
+            )}
+            {footer?.text && (
+              <p className="text-[10px] text-gray-400 dark:text-[#667781] border-t border-gray-100 dark:border-[#2a3942] pt-1.5">{footer.text}</p>
+            )}
+          </div>
+          {isMPM && (
+            <div className="mt-1.5 bg-white dark:bg-[#1f2c34] rounded-lg py-1.5 text-center text-[11px] text-[#00a5f4] font-medium shadow-sm">
+              🛍️ {buttons?.buttons?.[0]?.text || 'View items'}
+            </div>
+          )}
+          {!isMPM && buttons?.buttons && (
+            <div className="mt-1.5 space-y-1">
+              {buttons.buttons.map((btn, i) => (
+                <div key={i} className="bg-white dark:bg-[#1f2c34] rounded-lg py-1.5 text-center text-[11px] text-[#00a5f4] font-medium shadow-sm">
+                  {btn.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Usage stats */}
+      <div>
+        <p className="text-[10px] font-semibold text-gray-400 dark:text-[#667781] uppercase tracking-wide mb-2">Broadcast History</p>
+        {statsLoading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-10 bg-gray-100 dark:bg-[#2a3942] rounded-xl animate-pulse" />
+            ))}
+          </div>
+        ) : stats ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-gray-50 dark:bg-[#1f2c34] rounded-xl p-2.5 text-center border border-gray-100 dark:border-[#2a3942]">
+                <p className="text-lg font-bold text-[#111b21] dark:text-[#e9edef]">{stats.timesUsed}</p>
+                <p className="text-[10px] text-gray-400 dark:text-[#667781]">Times used</p>
+              </div>
+              <div className="bg-gray-50 dark:bg-[#1f2c34] rounded-xl p-2.5 text-center border border-gray-100 dark:border-[#2a3942]">
+                <p className="text-lg font-bold text-[#111b21] dark:text-[#e9edef]">{stats.totalSent.toLocaleString()}</p>
+                <p className="text-[10px] text-gray-400 dark:text-[#667781]">Total sent</p>
+              </div>
+            </div>
+            {stats.timesUsed > 0 && (
+              <div className="space-y-2 bg-gray-50 dark:bg-[#1f2c34] rounded-xl p-3 border border-gray-100 dark:border-[#2a3942]">
+                {[
+                  { label: 'Delivery rate', val: stats.deliveryRate, color: 'bg-[#34B7F1]', text: 'text-[#34B7F1]' },
+                  { label: 'Read rate',     val: stats.readRate,     color: 'bg-purple-400', text: 'text-purple-500' },
+                ].map(({ label, val, color, text }) => (
+                  <div key={label}>
+                    <div className="flex justify-between text-[10px] mb-0.5">
+                      <span className="text-gray-500 dark:text-[#8696a0]">{label}</span>
+                      <span className={`font-semibold ${text}`}>{val !== null ? `${val}%` : 'N/A'}</span>
+                    </div>
+                    <div className="h-1.5 bg-gray-200 dark:bg-[#2a3942] rounded-full overflow-hidden">
+                      <div className={`h-full ${color} rounded-full`} style={{ width: `${val ?? 0}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {stats.lastUsedAt && (
+              <p className="text-[10px] text-gray-400 dark:text-[#667781] text-center">
+                Last used {new Date(stats.lastUsedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-6 text-gray-300 dark:text-[#3a4a52]">
+            <Megaphone size={28} className="mb-2 opacity-40" />
+            <p className="text-xs text-center">Never used in a broadcast yet</p>
           </div>
         )}
       </div>
@@ -964,6 +1119,16 @@ function CampaignHistory({
                   >
                     <RefreshCw size={10} /> Repeat
                   </button>
+                  <button
+                    onClick={() => (editingId === c.id ? cancelEdit() : startEdit(c))}
+                    className={`flex items-center gap-1 px-2.5 py-1 text-[10px] font-semibold rounded-lg transition-colors ${
+                      editingId === c.id
+                        ? 'bg-gray-200 dark:bg-[#3a4a52] text-gray-700 dark:text-[#e9edef]'
+                        : 'bg-gray-100 dark:bg-[#2a3942] text-gray-600 dark:text-[#8696a0] hover:bg-gray-200 dark:hover:bg-[#3a4a52]'
+                    }`}
+                  >
+                    <Edit2 size={10} /> {editingId === c.id ? 'Cancel' : 'Edit'}
+                  </button>
                 </div>
               </div>
 
@@ -1028,7 +1193,7 @@ function CampaignHistory({
               <ChevronRight size={14} className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
             </button>
 
-            {isExpanded && (
+            {isExpanded && editingId !== c.id && (
               <div className="border-t border-gray-100 dark:border-[#2a3942] max-h-48 overflow-y-auto divide-y divide-gray-50 dark:divide-[#2a3942]">
                 {c.recipients.map((r) => (
                   <div key={r.phone} className="flex items-center justify-between px-4 py-2">
@@ -1044,6 +1209,90 @@ function CampaignHistory({
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* ── Inline edit panel ── */}
+            {editingId === c.id && editForms[c.id] && (
+              <div className="border-t border-gray-100 dark:border-[#2a3942] bg-gray-50 dark:bg-[#0b141a] p-4 space-y-3">
+                {/* Campaign name */}
+                <div>
+                  <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0] mb-1 block">Campaign Name</label>
+                  <input
+                    value={editForms[c.id].name}
+                    onChange={(e) => setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], name: e.target.value } }))}
+                    className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-1.5 text-sm outline-none focus:border-wp-green transition-colors"
+                  />
+                </div>
+
+                {/* Body params */}
+                {editForms[c.id].bodyParams.length > 0 && (
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0] mb-1.5 block">Body Variables</label>
+                    <div className="space-y-1.5">
+                      {editForms[c.id].bodyParams.map((val, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="text-[10px] text-gray-400 dark:text-[#667781] w-8 shrink-0">{`{{${i + 1}}}`}</span>
+                          <input
+                            value={val}
+                            onChange={(e) => {
+                              const next = [...editForms[c.id].bodyParams];
+                              next[i] = e.target.value;
+                              setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], bodyParams: next } }));
+                            }}
+                            className="flex-1 border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-2 py-1 text-xs outline-none focus:border-wp-green transition-colors"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Header media URL */}
+                {(c.headerMediaUrl || editForms[c.id].headerMediaUrl) && (
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0] mb-1 block">Header Media URL</label>
+                    <input
+                      value={editForms[c.id].headerMediaUrl}
+                      onChange={(e) => setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], headerMediaUrl: e.target.value } }))}
+                      placeholder="https://..."
+                      className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-1.5 text-xs outline-none focus:border-wp-green transition-colors"
+                    />
+                  </div>
+                )}
+
+                {/* Recipients textarea */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0]">Recipients</label>
+                    <span className="text-[10px] text-gray-400 dark:text-[#667781]">
+                      {editForms[c.id].phonesText.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean).length} numbers
+                    </span>
+                  </div>
+                  <textarea
+                    value={editForms[c.id].phonesText}
+                    onChange={(e) => setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], phonesText: e.target.value } }))}
+                    rows={5}
+                    placeholder="One number per line or comma-separated"
+                    className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-wp-green resize-none transition-colors"
+                  />
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={cancelEdit}
+                    className="flex-1 py-2 border border-gray-200 dark:border-[#2a3942] text-gray-600 dark:text-[#8696a0] text-xs font-semibold rounded-xl hover:bg-gray-100 dark:hover:bg-[#2a3942] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => broadcastNew(c)}
+                    className="flex-1 py-2 bg-wp-green text-white text-xs font-semibold rounded-xl hover:bg-[#22c55e] transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Send size={12} /> Broadcast as New
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1072,12 +1321,25 @@ export default function BroadcastPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState('');
+  const [templateStats, setTemplateStats] = useState<TemplateStats | null>(null);
+  const [templateStatsLoading, setTemplateStatsLoading] = useState(false);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     dispatch(fetchTemplates());
   }, [dispatch]);
+
+  // Fetch per-template broadcast stats whenever the selected template changes
+  useEffect(() => {
+    if (!selectedTemplate) { setTemplateStats(null); return; }
+    setTemplateStatsLoading(true);
+    fetch(`/api/broadcast?stats=${encodeURIComponent(selectedTemplate.name)}`)
+      .then((r) => r.json())
+      .then((d) => setTemplateStats(d))
+      .catch(() => setTemplateStats(null))
+      .finally(() => setTemplateStatsLoading(false));
+  }, [selectedTemplate?.name]);
 
   // Poll delivered/read counts after broadcast completes
   useEffect(() => {
@@ -1133,19 +1395,34 @@ export default function BroadcastPage() {
 
   const handleRepeat = useCallback((campaign: Campaign) => {
     const tpl = templates.find((t) => t.name === campaign.templateName) || null;
+
+    // Restore body params as {{1}}→value map
     const paramMap: Record<string, string> = {};
     (campaign.bodyParams || []).forEach((v, i) => { paramMap[`{{${i + 1}}}`] = v; });
+
+    // Restore MPM sections from stored API format → UI draft format
+    const restoredMpm: MPMSectionDraft[] =
+      campaign.mpmSections?.length
+        ? campaign.mpmSections.map((s) => ({
+            title: s.title || '',
+            productIds: (s.product_items || [])
+              .map((p) => p.product_retailer_id)
+              .filter(Boolean)
+              .join(', '),
+          }))
+        : [{ title: '', productIds: '' }];
 
     setSelectedTemplate(tpl);
     setParams(paramMap);
     setHeaderMediaUrl(campaign.headerMediaUrl || '');
-    setThumbnailProductId('');
-    setMpmSections([{ title: '', productIds: '' }]);
+    setThumbnailProductId(campaign.thumbnailProductRetailerId || '');
+    setMpmSections(restoredMpm);
     setPhones(campaign.recipients.map((r) => r.phone));
     setCampaignName(`Repeat: ${campaign.name}`);
     setLiveProgress(null);
     setError('');
-    setStep(tpl ? 1 : 0);
+    // Jump straight to Preview & Send if we have the template; else pick template first
+    setStep(tpl ? 3 : 0);
     setTab('compose');
   }, [templates]);
 
@@ -1428,23 +1705,44 @@ export default function BroadcastPage() {
           {/* Step content */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-hidden p-6">
-              <div className="h-full max-w-2xl">
+              <div className={`h-full ${step === 0 ? 'w-full' : 'max-w-2xl'}`}>
                 {step === 0 && (
-                  <div className="bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] h-full overflow-hidden flex flex-col">
-                    <div className="px-5 py-4 border-b border-gray-100 dark:border-[#2a3942]">
-                      <h2 className="font-semibold text-[#111b21] dark:text-[#e9edef]">Choose a Template</h2>
-                      <p className="text-xs text-gray-400 dark:text-[#667781]">Only approved templates can be used for broadcast</p>
+                  <div className="flex h-full gap-3">
+                    {/* Left: template list */}
+                    <div className="flex-1 bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] h-full overflow-hidden flex flex-col min-w-0">
+                      <div className="px-5 py-4 border-b border-gray-100 dark:border-[#2a3942]">
+                        <h2 className="font-semibold text-[#111b21] dark:text-[#e9edef]">Choose a Template</h2>
+                        <p className="text-xs text-gray-400 dark:text-[#667781]">Only approved templates can be used for broadcast</p>
+                      </div>
+                      <div className="flex-1 overflow-hidden">
+                        <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} onSelect={(t) => {
+                          if (t.id !== selectedTemplate?.id) {
+                            setParams({});
+                            setHeaderMediaUrl('');
+                            setThumbnailProductId('');
+                            setMpmSections([{ title: '', productIds: '' }]);
+                          }
+                          setSelectedTemplate(t);
+                        }} />
+                      </div>
                     </div>
-                    <div className="flex-1 overflow-hidden">
-                      <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} onSelect={(t) => {
-                        if (t.id !== selectedTemplate?.id) {
-                          setParams({});
-                          setHeaderMediaUrl('');
-                          setThumbnailProductId('');
-                          setMpmSections([{ title: '', productIds: '' }]);
-                        }
-                        setSelectedTemplate(t);
-                      }} />
+
+                    {/* Right: preview + stats panel */}
+                    <div className="w-64 shrink-0 bg-white dark:bg-[#111b21] rounded-2xl shadow-sm border border-gray-100 dark:border-[#2a3942] h-full overflow-hidden">
+                      {selectedTemplate ? (
+                        <TemplatePreviewPanel
+                          template={selectedTemplate}
+                          stats={templateStats}
+                          statsLoading={templateStatsLoading}
+                        />
+                      ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-300 dark:text-[#3a4a52] p-6 gap-3">
+                          <Eye size={32} className="opacity-40" />
+                          <p className="text-xs text-center text-gray-400 dark:text-[#667781]">
+                            Select a template to see a preview and past broadcast stats
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
