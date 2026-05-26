@@ -4,7 +4,7 @@ import {
   broadcastCampaigns, broadcastRecipients,
   contacts, conversations, messages, messageStatusLog, leads,
 } from '@/db/schema';
-import { eq, desc, sql, and, inArray, gt } from 'drizzle-orm';
+import { eq, desc, sql, and, inArray, gt, ne } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, MPMSection } from '@/lib/whatsapp-api';
 import { normalizePhone } from '@/lib/utils';
 
@@ -35,10 +35,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(campaign);
     }
 
-    // All campaigns list
+    // All campaigns list — filter by status if provided, otherwise exclude drafts
+    const statusParam = searchParams.get('status');
     const campaigns = await db
       .select()
       .from(broadcastCampaigns)
+      .where(statusParam ? eq(broadcastCampaigns.status, statusParam as any) : ne(broadcastCampaigns.status, 'draft'))
       .orderBy(desc(broadcastCampaigns.createdAt));
 
     const enriched = await Promise.all(
@@ -107,6 +109,7 @@ export async function POST(req: NextRequest) {
     mpmSections = [] as MPMSection[],
     thumbnailProductRetailerId = '',
     recipients = [] as string[],
+    draftOnly = false,
   } = body;
 
   if (!templateName || recipients.length === 0) {
@@ -122,6 +125,27 @@ export async function POST(req: NextRequest) {
 
   if (phones.length === 0) {
     return NextResponse.json({ error: 'No valid phone numbers provided' }, { status: 400 });
+  }
+
+  // ─── Draft-only: save and return immediately, no sending ─────────────────────
+  if (draftOnly) {
+    const [draft] = await db.insert(broadcastCampaigns).values({
+      name: name || `Draft ${new Date().toLocaleString('en-IN')}`,
+      templateId: templateId || null,
+      templateName,
+      language,
+      bodyParams,
+      headerParams: headerParam ? [headerParam] : [],
+      headerMediaUrl: headerMediaUrl || null,
+      totalRecipients: phones.length,
+      status: 'draft',
+    }).returning();
+    if (phones.length > 0) {
+      await db.insert(broadcastRecipients).values(
+        phones.map((phone: string) => ({ campaignId: draft.id, phone, status: 'pending' as const }))
+      );
+    }
+    return NextResponse.json({ id: draft.id, status: 'draft', name: draft.name });
   }
 
   // Create campaign and recipients upfront so the client gets campaignId immediately

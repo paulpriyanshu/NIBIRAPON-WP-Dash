@@ -6,7 +6,7 @@ import {
 } from '@/db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { sendRichTemplateMessage } from '@/lib/whatsapp-api';
-// import { normalizePhone } from '@/lib/utils';
+import { normalizePhone } from '@/lib/utils';
 
 export const maxDuration = 300;
 
@@ -163,4 +163,43 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       'X-Accel-Buffering': 'no',
     },
   });
+}
+
+// PATCH /api/broadcast/[id] — update campaign meta + recipients (mainly for drafts)
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const body = await req.json();
+  const { name, templateName, language, bodyParams, headerParam, headerMediaUrl, recipients } = body;
+
+  const update: Record<string, any> = { updatedAt: new Date() };
+  if (name          !== undefined) update.name           = name;
+  if (templateName  !== undefined) update.templateName   = templateName;
+  if (language      !== undefined) update.language       = language;
+  if (bodyParams    !== undefined) update.bodyParams      = bodyParams;
+  if (headerParam   !== undefined) update.headerParams   = headerParam ? [headerParam] : [];
+  if (headerMediaUrl !== undefined) update.headerMediaUrl = headerMediaUrl || null;
+
+  await db.update(broadcastCampaigns).set(update).where(eq(broadcastCampaigns.id, id));
+
+  if (recipients !== undefined) {
+    const phones = (recipients as string[]).map(normalizePhone).filter((p) => p.length >= 10);
+    await db.delete(broadcastRecipients).where(eq(broadcastRecipients.campaignId, id));
+    if (phones.length > 0) {
+      await db.insert(broadcastRecipients).values(
+        phones.map((phone) => ({ campaignId: id, phone, status: 'pending' as const }))
+      );
+    }
+    await db.update(broadcastCampaigns)
+      .set({ totalRecipients: phones.length })
+      .where(eq(broadcastCampaigns.id, id));
+  }
+
+  return NextResponse.json({ success: true });
+}
+
+// DELETE /api/broadcast/[id] — delete a campaign (cascades recipients)
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  await db.delete(broadcastCampaigns).where(eq(broadcastCampaigns.id, id));
+  return NextResponse.json({ success: true });
 }

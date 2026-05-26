@@ -6,7 +6,7 @@ import { Template } from '@/types';
 import {
   Send, ChevronRight, ChevronLeft, CheckCircle2, Clock, XCircle,
   Users, Layers, Sliders, Eye, History, Plus, Upload,
-  Megaphone, Trash2, RefreshCw, X, AlertCircle,
+  Megaphone, Trash2, RefreshCw, X, AlertCircle, Edit2, Bookmark, BookmarkCheck,
 } from 'lucide-react';
 import Avatar from '@/components/ui/Avatar';
 import { BroadcastHistorySkeleton, TemplateGridSkeleton } from '@/components/ui/Skeletons';
@@ -855,16 +855,57 @@ function StepPreview({
 }
 
 // ─── Campaign History ─────────────────────────────────────────────────────────
+
+interface InlineEditState {
+  name: string;
+  bodyParams: string[];
+  headerMediaUrl: string;
+  phonesText: string;
+}
+
 function CampaignHistory({
-  campaigns, loading, onRefresh, onRepeat, onRetry,
+  campaigns, loading, onRepeat, onRetry, onBroadcastNew,
 }: {
   campaigns: Campaign[];
   loading: boolean;
-  onRefresh: () => void;
   onRepeat: (c: Campaign) => void;
   onRetry: (campaignId: string) => void;
+  onBroadcastNew: (data: { name: string; templateName: string; language: string; bodyParams: string[]; headerMediaUrl: string; phones: string[] }) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForms, setEditForms] = useState<Record<string, InlineEditState>>({});
+
+  const startEdit = (c: Campaign) => {
+    setEditingId(c.id);
+    setExpanded(null);
+    setEditForms((prev) => ({
+      ...prev,
+      [c.id]: {
+        name: c.name,
+        bodyParams: [...(c.bodyParams || [])],
+        headerMediaUrl: c.headerMediaUrl || '',
+        phonesText: c.recipients.map((r) => r.phone).join('\n'),
+      },
+    }));
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const broadcastNew = (c: Campaign) => {
+    const form = editForms[c.id];
+    if (!form) return;
+    const phones = form.phonesText.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+    onBroadcastNew({
+      name: form.name,
+      templateName: c.templateName,
+      language: c.language,
+      bodyParams: form.bodyParams,
+      headerMediaUrl: form.headerMediaUrl,
+      phones,
+    });
+    setEditingId(null);
+  };
 
   const statusConfig: Record<string, { icon: any; cls: string; badge: string }> = {
     completed: { icon: CheckCircle2, cls: 'text-green-500',                          badge: 'bg-green-100 text-green-700' },
@@ -1069,6 +1110,26 @@ export default function BroadcastPage() {
       setHistoryLoading(false);
     }
   }, []);
+
+  const handleBroadcastNew = useCallback((data: {
+    name: string; templateName: string; language: string;
+    bodyParams: string[]; headerMediaUrl: string; phones: string[];
+  }) => {
+    const tpl = templates.find((t) => t.name === data.templateName) || null;
+    const paramMap: Record<string, string> = {};
+    data.bodyParams.forEach((v, i) => { paramMap[`{{${i + 1}}}`] = v; });
+    setSelectedTemplate(tpl);
+    setParams(paramMap);
+    setHeaderMediaUrl(data.headerMediaUrl);
+    setPhones(data.phones);
+    setCampaignName(`${data.name} (Copy)`);
+    setMpmSections([{ title: '', productIds: '' }]);
+    setThumbnailProductId('');
+    setLiveProgress(null);
+    setError('');
+    setStep(tpl ? 3 : 0);
+    setTab('compose');
+  }, [templates]);
 
   const handleRepeat = useCallback((campaign: Campaign) => {
     const tpl = templates.find((t) => t.name === campaign.templateName) || null;
@@ -1329,7 +1390,7 @@ export default function BroadcastPage() {
 
       {tab === 'history' ? (
         <div className="flex-1 overflow-y-auto p-6 max-w-3xl w-full mx-auto">
-          <CampaignHistory campaigns={campaigns} loading={historyLoading} onRefresh={fetchHistory} onRepeat={handleRepeat} onRetry={handleRetry} />
+          <CampaignHistory campaigns={campaigns} loading={historyLoading} onRepeat={handleRepeat} onRetry={handleRetry} onBroadcastNew={handleBroadcastNew} />
         </div>
       ) : (
         <div className="flex-1 flex overflow-hidden">
