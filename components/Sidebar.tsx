@@ -1,8 +1,11 @@
 'use client';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell, Users, LogOut } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
+import { useEffect, useState } from 'react';
+
+interface SessionUser { userId: string; name: string; email: string | null; username: string | null; role: string; }
 
 const NAV = [
   { href: '/inbox',     label: 'Inbox',     icon: MessageSquare },
@@ -14,9 +17,30 @@ const NAV = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router   = useRouter();
   const { theme, toggle } = useTheme();
+  const [me, setMe] = useState<SessionUser | null>(null);
+
+  useEffect(() => {
+    fetch('/api/auth/me').then((r) => r.ok ? r.json() : null).then((d) => d && setMe(d));
+  }, []);
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + '/');
+
+  const logout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    router.push('/login');
+    router.refresh();
+  };
+
+  const initials = me?.name?.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2) || 'NB';
+  const displayName = me?.name || 'Admin';
+  const displaySub  = me?.role ? me.role.charAt(0).toUpperCase() + me.role.slice(1) : 'Connected';
+
+  const allNav = [
+    ...NAV,
+    ...(me?.role === 'admin' ? [{ href: '/users', label: 'Users', icon: Users }] : []),
+  ];
 
   return (
     <>
@@ -37,17 +61,13 @@ export default function Sidebar() {
         </div>
 
         {/* Nav items */}
-        <nav className="flex-1 py-3 flex flex-col gap-1 px-2">
-          {NAV.map(({ href, label, icon: Icon }) => {
+        <nav className="flex-1 py-3 flex flex-col gap-1 px-2 overflow-y-auto">
+          {allNav.map(({ href, label, icon: Icon }) => {
             const active = isActive(href);
             return (
-              <Link
-                key={href}
-                href={href}
-                className={`flex items-center gap-3 px-2 py-2.5 rounded-xl transition-all group ${
-                  active
-                    ? 'bg-white/20 text-white'
-                    : 'text-white/60 hover:text-white hover:bg-white/10'
+              <Link key={href} href={href}
+                className={`flex items-center gap-3 px-2 py-2.5 rounded-xl transition-all ${
+                  active ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white hover:bg-white/10'
                 }`}
               >
                 <Icon size={18} className="flex-shrink-0" />
@@ -60,17 +80,10 @@ export default function Sidebar() {
 
         {/* Bottom actions */}
         <div className="px-2 py-3 border-t border-white/10 flex flex-col gap-1">
-          <button
-            onClick={toggle}
-            className="flex items-center gap-3 px-2 py-2.5 rounded-xl text-white/60 hover:text-white hover:bg-white/10 transition-all"
-            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
-          >
-            {theme === 'dark'
-              ? <Sun size={18} className="flex-shrink-0" />
-              : <Moon size={18} className="flex-shrink-0" />}
-            <span className="hidden lg:block text-sm font-medium">
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </span>
+          <button onClick={toggle}
+            className="flex items-center gap-3 px-2 py-2.5 rounded-xl text-white/60 hover:text-white hover:bg-white/10 transition-all">
+            {theme === 'dark' ? <Sun size={18} className="flex-shrink-0" /> : <Moon size={18} className="flex-shrink-0" />}
+            <span className="hidden lg:block text-sm font-medium">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
           </button>
 
           <button className="flex items-center gap-3 px-2 py-2.5 rounded-xl text-white/60 hover:text-white hover:bg-white/10 transition-all relative">
@@ -79,13 +92,20 @@ export default function Sidebar() {
             <span className="absolute top-2 left-2 w-1.5 h-1.5 bg-red-500 rounded-full md:left-6 lg:left-auto lg:right-3" />
           </button>
 
+          <button onClick={logout}
+            className="flex items-center gap-3 px-2 py-2.5 rounded-xl text-white/60 hover:text-red-300 hover:bg-red-500/10 transition-all">
+            <LogOut size={18} className="flex-shrink-0" />
+            <span className="hidden lg:block text-sm font-medium">Logout</span>
+          </button>
+
+          {/* User info */}
           <div className="flex items-center gap-3 px-2 py-2 mt-1">
             <div className="w-8 h-8 rounded-full bg-[#25D366]/30 border border-[#25D366]/50 flex items-center justify-center flex-shrink-0">
-              <span className="text-white text-[10px] font-bold">NB</span>
+              <span className="text-white text-[10px] font-bold">{initials}</span>
             </div>
             <div className="hidden lg:block min-w-0">
-              <p className="text-white text-xs font-semibold truncate">Admin</p>
-              <p className="text-[#25D366] text-[10px] truncate">Connected</p>
+              <p className="text-white text-xs font-semibold truncate">{displayName}</p>
+              <p className="text-[#25D366] text-[10px] truncate">{displaySub}</p>
             </div>
           </div>
         </div>
@@ -108,24 +128,19 @@ export default function Sidebar() {
           <button onClick={toggle} className="p-2 rounded-full hover:bg-white/10 text-white/70 transition-colors">
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <button className="p-2 rounded-full hover:bg-white/10 relative">
-            <Bell size={16} className="text-white/70" />
-            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-500 rounded-full" />
+          <button onClick={logout} className="p-2 rounded-full hover:bg-red-500/20 text-white/70 transition-colors">
+            <LogOut size={16} />
           </button>
         </div>
       </header>
 
       {/* ── Mobile bottom tab bar ────────────────────────────────────── */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#075E54] dark:bg-[#1f2c34] border-t border-black/10 flex items-stretch">
-        {NAV.map(({ href, label, icon: Icon }) => {
+        {allNav.slice(0, 5).map(({ href, label, icon: Icon }) => {
           const active = isActive(href);
           return (
-            <Link
-              key={href}
-              href={href}
-              className={`flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                active ? 'text-white' : 'text-white/50'
-              }`}
+            <Link key={href} href={href}
+              className={`flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors ${active ? 'text-white' : 'text-white/50'}`}
             >
               <div className={`p-1 rounded-lg ${active ? 'bg-white/20' : ''}`}>
                 <Icon size={18} />

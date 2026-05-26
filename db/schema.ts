@@ -305,6 +305,26 @@ export const templateSnapshots = pgTable('template_snapshots', {
   index('template_snapshots_created_idx').on(t.createdAt),
 ]);
 
+// ─── users ────────────────────────────────────────────────────────────────────
+
+export const users = pgTable('users', {
+  id:           uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  name:         text('name').notNull(),
+  email:        varchar('email', { length: 255 }),
+  username:     varchar('username', { length: 100 }),
+  phone:        varchar('phone', { length: 20 }),
+  passwordHash: text('password_hash').notNull(),
+  role:         text('role').notNull().default('user'), // 'admin' | 'manager' | 'user' | 'reviewer'
+  isActive:     boolean('is_active').notNull().default(true),
+  createdBy:    uuid('created_by'),
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('users_email_idx').on(t.email),
+  uniqueIndex('users_username_idx').on(t.username),
+  uniqueIndex('users_phone_idx').on(t.phone),
+]);
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const contactsRelations = relations(contacts, ({ many }) => ({
