@@ -1017,6 +1017,8 @@ interface InlineEditState {
   bodyParams: string[];
   headerMediaUrl: string;
   phonesText: string;
+  thumbnailProductRetailerId: string;
+  mpmSections: { title: string; productIds: string }[];
 }
 
 function CampaignHistory({
@@ -1026,7 +1028,7 @@ function CampaignHistory({
   loading: boolean;
   onRepeat: (c: Campaign) => void;
   onRetry: (campaignId: string) => void;
-  onBroadcastNew: (data: { name: string; templateName: string; language: string; bodyParams: string[]; headerMediaUrl: string; phones: string[] }) => void;
+  onBroadcastNew: (data: { name: string; templateName: string; language: string; bodyParams: string[]; headerMediaUrl: string; phones: string[]; thumbnailProductRetailerId: string; mpmSections: { title: string; productIds: string }[] }) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1035,6 +1037,15 @@ function CampaignHistory({
   const startEdit = (c: Campaign) => {
     setEditingId(c.id);
     setExpanded(null);
+    const restoredMpm = c.mpmSections?.length
+      ? c.mpmSections.map((s) => ({
+          title: s.title || '',
+          productIds: (s.product_items || [])
+            .map((p) => p.product_retailer_id)
+            .filter(Boolean)
+            .join(', '),
+        }))
+      : [{ title: '', productIds: '' }];
     setEditForms((prev) => ({
       ...prev,
       [c.id]: {
@@ -1042,6 +1053,8 @@ function CampaignHistory({
         bodyParams: [...(c.bodyParams || [])],
         headerMediaUrl: c.headerMediaUrl || '',
         phonesText: c.recipients.map((r) => r.phone).join('\n'),
+        thumbnailProductRetailerId: c.thumbnailProductRetailerId || '',
+        mpmSections: restoredMpm,
       },
     }));
   };
@@ -1059,6 +1072,8 @@ function CampaignHistory({
       bodyParams: form.bodyParams,
       headerMediaUrl: form.headerMediaUrl,
       phones,
+      thumbnailProductRetailerId: form.thumbnailProductRetailerId,
+      mpmSections: form.mpmSections,
     });
     setEditingId(null);
   };
@@ -1262,6 +1277,63 @@ function CampaignHistory({
                   </div>
                 )}
 
+                {/* MPM fields — shown for MPM template campaigns */}
+                {(c.isMPMTemplate || (c.mpmSections?.length ?? 0) > 0) && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0] mb-1 block">Thumbnail Product Retailer ID</label>
+                      <input
+                        value={editForms[c.id].thumbnailProductRetailerId}
+                        onChange={(e) => setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], thumbnailProductRetailerId: e.target.value } }))}
+                        placeholder="e.g. SKU-001"
+                        className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-1.5 text-xs outline-none focus:border-wp-green transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-[#8696a0] mb-1.5 block">Product Sections</label>
+                      <div className="space-y-2">
+                        {editForms[c.id].mpmSections.map((sec, si) => (
+                          <div key={si} className="bg-white dark:bg-[#1f2c34] border border-gray-200 dark:border-[#2a3942] rounded-xl p-3 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] text-gray-400 dark:text-[#667781] w-14 shrink-0">Section {si + 1}</span>
+                              <input
+                                value={sec.title}
+                                onChange={(e) => {
+                                  const next = [...editForms[c.id].mpmSections];
+                                  next[si] = { ...next[si], title: e.target.value };
+                                  setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], mpmSections: next } }));
+                                }}
+                                placeholder="Section title"
+                                className="flex-1 border border-gray-200 dark:border-[#2a3942] dark:bg-[#111b21] dark:text-[#e9edef] rounded-lg px-2 py-1 text-xs outline-none focus:border-wp-green transition-colors"
+                              />
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-gray-400 dark:text-[#667781] mb-1">Product IDs (comma-separated)</p>
+                              <textarea
+                                value={sec.productIds}
+                                onChange={(e) => {
+                                  const next = [...editForms[c.id].mpmSections];
+                                  next[si] = { ...next[si], productIds: e.target.value };
+                                  setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], mpmSections: next } }));
+                                }}
+                                rows={2}
+                                placeholder="SKU-001, SKU-002, SKU-003"
+                                className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#111b21] dark:text-[#e9edef] rounded-lg px-2 py-1.5 text-xs font-mono outline-none focus:border-wp-green resize-none transition-colors"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => setEditForms((p) => ({ ...p, [c.id]: { ...p[c.id], mpmSections: [...p[c.id].mpmSections, { title: '', productIds: '' }] } }))}
+                          className="w-full py-1.5 border border-dashed border-gray-300 dark:border-[#3a4a52] text-xs text-gray-400 dark:text-[#667781] rounded-lg hover:border-wp-green hover:text-wp-green transition-colors"
+                        >
+                          + Add Section
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Recipients textarea */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -1377,6 +1449,8 @@ export default function BroadcastPage() {
   const handleBroadcastNew = useCallback((data: {
     name: string; templateName: string; language: string;
     bodyParams: string[]; headerMediaUrl: string; phones: string[];
+    thumbnailProductRetailerId: string;
+    mpmSections: { title: string; productIds: string }[];
   }) => {
     const tpl = templates.find((t) => t.name === data.templateName) || null;
     const paramMap: Record<string, string> = {};
@@ -1386,10 +1460,11 @@ export default function BroadcastPage() {
     const needsBodyParams = /\{\{\d+\}\}/.test(tplBodyText);
     const hasBodyData   = data.bodyParams.some((v) => v.trim().length > 0);
     const isMPMTemplate = tpl ? checkIsMPM(tpl) : false;
+    const hasMPMData    = data.mpmSections.some((s) => s.productIds.trim().length > 0);
 
     let targetStep = 0;
     if (tpl) {
-      if (isMPMTemplate) targetStep = 1; // MPM sections can't come from inline edit
+      if (isMPMTemplate && !hasMPMData) targetStep = 1;
       else if (needsBodyParams && !hasBodyData) targetStep = 1;
       else targetStep = 3;
     }
@@ -1399,8 +1474,8 @@ export default function BroadcastPage() {
     setHeaderMediaUrl(data.headerMediaUrl);
     setPhones(data.phones);
     setCampaignName(`${data.name} (Copy)`);
-    setMpmSections([{ title: '', productIds: '' }]);
-    setThumbnailProductId('');
+    setMpmSections(data.mpmSections.length > 0 ? data.mpmSections : [{ title: '', productIds: '' }]);
+    setThumbnailProductId(data.thumbnailProductRetailerId);
     setLiveProgress(null);
     setError('');
     setStep(targetStep);
