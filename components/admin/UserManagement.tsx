@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, Edit2, Check, X, ShieldCheck, User, Eye, EyeOff, UserCog } from 'lucide-react';
+import { Plus, Trash2, Edit2, Check, X, ShieldCheck, User, Eye, EyeOff, Loader2, UserCog } from 'lucide-react';
 import { UserRowSkeleton } from '@/components/ui/Skeletons';
 
 interface UserRow {
