@@ -95,16 +95,35 @@ export default function ChatWindow() {
     };
   }, [selectedId, dispatch]);
 
-  // Scroll to bottom: instant on conversation switch, smooth only for new messages
+  // Scroll to bottom when messages load or a new one arrives.
+  //
+  // Bug was: the effect fired on `selectedId` change before the new conversation's
+  // messages had replaced the old ones in Redux, causing scroll to land in the
+  // middle of stale content. Fix: track whether the messages that arrived actually
+  // belong to the current conversation, and defer the scroll by one rAF so images/
+  // media have time to lay out before we measure scroll height.
   useEffect(() => {
-    const el = messagesEndRef.current;
-    if (!el) return;
+    const area = messagesAreaRef.current;
+    if (!area || !selectedId) return;
+
     const isConvSwitch = prevConvIdRef.current !== selectedId;
-    const isNewMessage = !isConvSwitch && messages.length > prevMsgCountRef.current;
-    prevConvIdRef.current = selectedId ?? null;
+    // Only scroll if messages now belong to the selected conversation
+    const belongsToCurrentConv =
+      messages.length > 0 && messages[0].conversationId === selectedId;
+    const isNewMessage =
+      !isConvSwitch &&
+      belongsToCurrentConv &&
+      messages.length > prevMsgCountRef.current;
+
+    prevConvIdRef.current = selectedId;
     prevMsgCountRef.current = messages.length;
-    if (isConvSwitch || isNewMessage) {
-      el.scrollIntoView({ behavior: isConvSwitch ? 'instant' : 'smooth' });
+
+    if ((isConvSwitch && belongsToCurrentConv) || isNewMessage) {
+      // Defer by one animation frame so the DOM has finished painting
+      const raf = requestAnimationFrame(() => {
+        area.scrollTop = area.scrollHeight;
+      });
+      return () => cancelAnimationFrame(raf);
     }
   }, [messages, selectedId]);
 
