@@ -1,22 +1,25 @@
 import { MongoClient } from 'mongodb';
 
-const uri = process.env.MONGODB_URI!;
-if (!uri) throw new Error('MONGODB_URI env var is not set');
-
 declare global {
   // eslint-disable-next-line no-var
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 
-let clientPromise: Promise<MongoClient>;
+// Lazy — only throws when a route handler actually calls getMongoClient(),
+// not at module-evaluation time (which would crash the Next.js build when
+// MONGODB_URI is absent from Vercel env vars).
+function getMongoClient(): Promise<MongoClient> {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error('MONGODB_URI env var is not set. Add it in Vercel → Settings → Environment Variables.');
 
-if (process.env.NODE_ENV === 'development') {
-  if (!global._mongoClientPromise) {
-    global._mongoClientPromise = new MongoClient(uri).connect();
+  if (process.env.NODE_ENV === 'development') {
+    if (!global._mongoClientPromise) {
+      global._mongoClientPromise = new MongoClient(uri).connect();
+    }
+    return global._mongoClientPromise;
   }
-  clientPromise = global._mongoClientPromise;
-} else {
-  clientPromise = new MongoClient(uri).connect();
+
+  return new MongoClient(uri).connect();
 }
 
-export default clientPromise;
+export default getMongoClient;

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import clientPromise from '@/lib/mongodb';
+import getMongoClient from '@/lib/mongodb';
 
 const DB   = 'nibiraponcollections';
 const COLL = 'flows';
 
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const flows = await client
       .db(DB)
       .collection(COLL)
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     const now = new Date();
-    const client = await clientPromise;
+    const client = await getMongoClient();
     const result = await client
       .db(DB)
       .collection(COLL)

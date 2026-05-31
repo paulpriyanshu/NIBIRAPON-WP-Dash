@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ObjectId } from 'mongodb';
-import clientPromise from '@/lib/mongodb';
+import getMongoClient from '@/lib/mongodb';
 
 const DB   = 'nibiraponcollections';
 const COLL = 'flows';
@@ -13,7 +13,7 @@ export async function PATCH(
     const { id } = await params;
     const { name, nodes, edges } = await req.json();
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     await client
       .db(DB)
       .collection(COLL)
@@ -45,7 +45,7 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    const client = await clientPromise;
+    const client = await getMongoClient();
     await client
       .db(DB)
       .collection(COLL)
