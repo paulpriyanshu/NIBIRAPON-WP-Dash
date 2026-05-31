@@ -314,7 +314,10 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     sentAt:        new Date(parseInt(msg.timestamp) * 1000),
   }).onConflictDoNothing();
 
-  // ── AI agent reply (fire-and-forget, only for text messages) ─────────────
+  // ── AI agent reply ────────────────────────────────────────────────────────
+  // MUST be awaited before returning — Vercel kills the lambda the moment
+  // the response is sent, so fire-and-forget never executes the OpenAI call.
+  // GPT-4o-mini responds in ~1-2 s; total flow stays well under the 10 s limit.
   const conv = existingConv ?? (await db
     .select()
     .from(conversations)
@@ -323,8 +326,7 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     .then(r => r[0]));
 
   if (conv?.agentEnabled && msgText) {
-    // Don't await — return 200 to Meta immediately; agent runs in background
-    agentReply({
+    await agentReply({
       conversationId,
       toPhone: fromPhone,
       bizPhone: phoneNumberId,
