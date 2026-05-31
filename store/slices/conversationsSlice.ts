@@ -123,6 +123,10 @@ const conversationsSlice = createSlice({
       const conv = state.conversations.find((c) => c.id === action.payload);
       if (conv) conv.isMuted = !conv.isMuted;
     },
+    setAgentEnabled(state, action: PayloadAction<{ id: string; enabled: boolean }>) {
+      const conv = state.conversations.find((c) => c.id === action.payload.id);
+      if (conv) conv.agentEnabled = action.payload.enabled;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -151,7 +155,7 @@ const conversationsSlice = createSlice({
 
 export const {
   selectConversation, clearConversation, setSearchQuery, setFilter, addMessage, updateMessageStatus,
-  updateConversationStatus, addConversation, setTyping, pinConversation, muteConversation,
+  updateConversationStatus, addConversation, setTyping, pinConversation, muteConversation, setAgentEnabled,
 } = conversationsSlice.actions;
 
 export default conversationsSlice.reducer;

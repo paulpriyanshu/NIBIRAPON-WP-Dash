@@ -3,6 +3,17 @@ import { db } from '@/db';
 import { conversations, contacts, messages, contactTags, conversationTags } from '@/db/schema';
 import { eq, desc, inArray } from 'drizzle-orm';
 
+/**
+ * Returns the canonical phone number so that 91XXXXXXXXXX and XXXXXXXXXX
+ * (bare 10-digit Indian mobile) both map to the same key.
+ */
+function canonicalPhone(phone: string): string {
+  const s = phone.replace(/\D/g, '');
+  if (/^[6-9]\d{9}$/.test(s)) return `91${s}`;   // bare 10-digit → add 91
+  if (/^091[6-9]\d{9}$/.test(s)) return s.slice(1); // 0-prefixed 91 → drop 0
+  return s;
+}
+
 export async function GET() {
   try {
     // Fetch all conversations with their contact
@@ -86,19 +97,63 @@ export async function GET() {
               templateName: lastMsg.templateName,
             }
           : undefined,
-        unreadCount: conv.unreadCount,
-        status: conv.status,
-        assignedTo: conv.assignedTo,
-        isPinned: conv.isPinned,
-        isArchived: conv.isArchived,
-        isMuted: conv.isMuted,
-        tags: tagsByConv[conv.id] || [],
-        createdAt: conv.createdAt.getTime(),
-        updatedAt: conv.updatedAt.getTime(),
+        unreadCount:  conv.unreadCount,
+        status:       conv.status,
+        assignedTo:   conv.assignedTo,
+        isPinned:     conv.isPinned,
+        isArchived:   conv.isArchived,
+        isMuted:      conv.isMuted,
+        agentEnabled: conv.agentEnabled,
+        tags:         tagsByConv[conv.id] || [],
+        createdAt:    conv.createdAt.getTime(),
+        updatedAt:    conv.updatedAt.getTime(),
       };
     });
 
-    return NextResponse.json(result);
+    // ── Deduplicate: group conversations whose contacts share the same
+    //    canonical phone (e.g. 91XXXXXXXXXX vs XXXXXXXXXX).
+    //    Keep the most-recently-updated conversation as the representative;
+    //    sum unread counts; use whichever lastMessage is newest.
+    const phoneGroups = new Map<string, typeof result>();
+    for (const conv of result) {
+      const key = canonicalPhone(conv.contact.phone);
+      if (!phoneGroups.has(key)) phoneGroups.set(key, []);
+      phoneGroups.get(key)!.push(conv);
+    }
+
+    const deduped = Array.from(phoneGroups.values()).map(group => {
+      if (group.length === 1) return group[0];
+
+      // Primary = most recently active conversation
+      group.sort((a, b) => b.updatedAt - a.updatedAt);
+      const primary = { ...group[0] };
+
+      // Aggregate unread across all duplicates
+      primary.unreadCount = group.reduce((s, c) => s + c.unreadCount, 0);
+
+      // Use the newest lastMessage from any duplicate
+      const newest = group
+        .filter(c => c.lastMessage)
+        .sort((a, b) => (b.lastMessage!.timestamp) - (a.lastMessage!.timestamp))[0];
+      if (newest) primary.lastMessage = newest.lastMessage;
+
+      // Normalise the stored phone to canonical form
+      primary.contact = {
+        ...primary.contact,
+        phone: canonicalPhone(primary.contact.phone),
+      };
+
+      return primary;
+    });
+
+    // Restore sort: pinned first, then by updatedAt desc
+    deduped.sort((a, b) => {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return b.updatedAt - a.updatedAt;
+    });
+
+    return NextResponse.json(deduped);
   } catch (err: any) {
     console.error('[Conversations API] Error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -111,7 +166,7 @@ export async function PATCH(req: NextRequest) {
     const { id, ...updates } = await req.json();
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    const allowed = ['status', 'isPinned', 'isMuted', 'isArchived', 'assignedTo', 'unreadCount'] as const;
+    const allowed = ['status', 'isPinned', 'isMuted', 'isArchived', 'assignedTo', 'unreadCount', 'agentEnabled'] as const;
     const patch: Record<string, any> = { updatedAt: new Date() };
     for (const key of allowed) {
       if (key in updates) patch[key] = updates[key];

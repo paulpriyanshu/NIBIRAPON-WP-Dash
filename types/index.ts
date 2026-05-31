@@ -51,6 +51,7 @@ export interface Message {
   reactions?: { emoji: string; from: string }[];
   isDeleted?: boolean;
   isStarred?: boolean;
+  sentBy?: string | null;  // 'agent' | 'admin' | username | null
 }
 
 export interface Conversation {
@@ -64,6 +65,7 @@ export interface Conversation {
   isPinned?: boolean;
   isArchived?: boolean;
   isMuted?: boolean;
+  agentEnabled?: boolean;
   createdAt: number;
   updatedAt: number;
 }

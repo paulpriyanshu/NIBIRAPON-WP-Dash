@@ -68,16 +68,17 @@ export const contactTags = pgTable('contact_tags', {
 // ─── conversations ────────────────────────────────────────────────────────────
 
 export const conversations = pgTable('conversations', {
-  id:          uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-  contactId:   uuid('contact_id').notNull().references(() => contacts.id, { onDelete: 'cascade' }),
-  status:      conversationStatusEnum('status').notNull().default('open'),
-  assignedTo:  text('assigned_to'),
-  isPinned:    boolean('is_pinned').notNull().default(false),
-  isArchived:  boolean('is_archived').notNull().default(false),
-  isMuted:     boolean('is_muted').notNull().default(false),
-  unreadCount: integer('unread_count').notNull().default(0),
-  createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt:   timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  id:           uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  contactId:    uuid('contact_id').notNull().references(() => contacts.id, { onDelete: 'cascade' }),
+  status:       conversationStatusEnum('status').notNull().default('open'),
+  assignedTo:   text('assigned_to'),
+  isPinned:     boolean('is_pinned').notNull().default(false),
+  isArchived:   boolean('is_archived').notNull().default(false),
+  isMuted:      boolean('is_muted').notNull().default(false),
+  unreadCount:  integer('unread_count').notNull().default(0),
+  agentEnabled: boolean('agent_enabled').notNull().default(true),
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('conversations_contact_idx').on(t.contactId),
   index('conversations_status_idx').on(t.status),
@@ -116,6 +117,7 @@ export const messages = pgTable('messages', {
   isOutgoing:      boolean('is_outgoing').notNull().default(false),
   isDeleted:       boolean('is_deleted').notNull().default(false),
   isStarred:       boolean('is_starred').notNull().default(false),
+  sentBy:          varchar('sent_by', { length: 100 }),   // 'agent' | 'admin' | username | null
   replyToId:       text('reply_to_id').references((): any => messages.id, { onDelete: 'set null' }),
   // Timestamps
   sentAt:          timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),

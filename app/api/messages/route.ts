@@ -150,6 +150,7 @@ export async function GET(req: NextRequest) {
       isOutgoing:      m.isOutgoing,
       isDeleted:       m.isDeleted,
       isStarred:       m.isStarred,
+      sentBy:          m.sentBy ?? null,
       templateName:    m.templateName,
       templateData:    m.templateData as Record<string, string> | undefined,
       reactions:       reactionsByMsg[m.id] || [],
@@ -187,6 +188,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       conversationId, to, text, type = 'text', templateName, mediaId, filename, mimeType, replyToId,
+      sentBy = null,
       bodyParams = [] as string[],
       headerParam = '',
       headerMediaUrl = '',
@@ -260,6 +262,7 @@ export async function POST(req: NextRequest) {
       mediaId:        mediaId || null,
       mediaMimeType:  mimeType || null,
       mediaFilename:  filename || null,
+      sentBy:         sentBy || null,
       status:         waMessageId ? 'sent' : 'failed',
       isOutgoing:     true,
       sentAt:         now,

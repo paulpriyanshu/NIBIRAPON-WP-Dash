@@ -584,6 +584,21 @@ export default function MessageBubble({ message, isFirst, onQuoteClick, onReply 
             </div>
           </div>
         )}
+
+        {/* Sender attribution badge — only on outgoing messages */}
+        {isOutgoing && message.sentBy && (
+          <div className={`flex mt-0.5 ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
+            {message.sentBy === 'agent' ? (
+              <span className="flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-[#25D366]/10 text-[#25D366] border border-[#25D366]/20">
+                🤖 AI · Riya
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-white/40 border border-gray-200 dark:border-white/10">
+                👤 {message.sentBy === 'admin' ? 'Admin' : message.sentBy}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

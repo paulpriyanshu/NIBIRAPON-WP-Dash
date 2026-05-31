@@ -5,8 +5,9 @@ import {
   webhookEvents, leads, messageReactions,
   broadcastRecipients, broadcastCampaigns,
 } from '@/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
-import { verifyWebhook } from '@/lib/whatsapp-api';
+import { eq, and, sql, asc } from 'drizzle-orm';
+import { verifyWebhook, sendTextMessage } from '@/lib/whatsapp-api';
+import { runAgent, type AgentMessage } from '@/lib/agent';
 
 export const maxDuration = 60;
 
@@ -157,8 +158,15 @@ function extractMedia(msg: any) {
   };
 }
 
+/** Canonical phone: bare 10-digit Indian number → prepend 91 */
+function canonicalPhone(raw: string): string {
+  const s = raw.replace(/\D/g, '');
+  if (/^[6-9]\d{9}$/.test(s)) return `91${s}`;
+  return s;
+}
+
 async function handleIncomingMessage(msg: any, contactProfile: any, metadata: any) {
-  const fromPhone    = msg.from;
+  const fromPhone    = canonicalPhone(msg.from);   // normalise on arrival
   const phoneNumberId = metadata?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || '';
   const contactName  = contactProfile?.profile?.name || fromPhone;
 
@@ -263,8 +271,9 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   } else {
     const [newConv] = await db.insert(conversations).values({
       contactId,
-      status: 'open',
-      unreadCount: 1,
+      status:       'open',
+      unreadCount:  1,
+      agentEnabled: true,   // agent ON by default for every new chat
     }).returning();
     conversationId = newConv.id;
   }
@@ -301,9 +310,87 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     ...mediaInfo,
     status:        'delivered',
     isOutgoing:    false,
+    sentBy:        null,   // incoming — always null
     sentAt:        new Date(parseInt(msg.timestamp) * 1000),
   }).onConflictDoNothing();
 
+  // ── AI agent reply (fire-and-forget, only for text messages) ─────────────
+  const conv = existingConv ?? (await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1)
+    .then(r => r[0]));
+
+  if (conv?.agentEnabled && msgText) {
+    // Don't await — return 200 to Meta immediately; agent runs in background
+    agentReply({
+      conversationId,
+      toPhone: fromPhone,
+      bizPhone: phoneNumberId,
+      userText: msgText,
+    }).catch(err => console.error('[agent-reply]', err));
+  }
+}
+
+/** Fetch conversation history, run the agent, and send the reply. */
+async function agentReply({
+  conversationId,
+  toPhone,
+  bizPhone,
+  userText,
+}: {
+  conversationId: string;
+  toPhone: string;
+  bizPhone: string;
+  userText: string;
+}) {
+  console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}"`);
+
+  // Last 20 messages as context (oldest first)
+  const history = await db
+    .select({ text: messages.text, isOutgoing: messages.isOutgoing })
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.isDeleted, false)))
+    .orderBy(asc(messages.sentAt))
+    .limit(20);
+
+  // Map to AgentMessage (skip the very last message — it's the current user message)
+  const chatHistory: AgentMessage[] = history
+    .slice(0, -1)
+    .filter(m => m.text)
+    .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
+
+  const { reply, shouldRespond } = await runAgent(userText, chatHistory);
+  console.log(`[agent] shouldRespond=${shouldRespond} reply="${reply?.slice(0, 60)}…"`);
+
+  if (!shouldRespond || !reply) return;
+
+  // Send via WhatsApp
+  const waRes = await sendTextMessage({ to: toPhone, text: reply });
+  const waId = waRes?.messages?.[0]?.id;
+  console.log(`[agent] ✓ WhatsApp send waId=${waId ?? 'local'}`);
+
+  const msgId = waId || `wamid.agent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const now = new Date();
+
+  // Persist with sentBy='agent'
+  await db.insert(messages).values({
+    id:            msgId,
+    conversationId,
+    fromNumber:    bizPhone,
+    toNumber:      toPhone,
+    type:          'text',
+    text:          reply,
+    status:        waId ? 'sent' : 'failed',
+    isOutgoing:    true,
+    sentBy:        'agent',
+    sentAt:        now,
+  }).onConflictDoNothing();
+
+  await db.update(conversations)
+    .set({ updatedAt: now })
+    .where(eq(conversations.id, conversationId));
 }
 
 async function handleStatusUpdate(statusUpdate: any) {

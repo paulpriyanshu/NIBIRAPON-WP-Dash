@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAppDispatch, useAppSelector } from '@/hooks/redux';
 import { fetchMessages, pollMessages, addMessageToConversation, replaceMessage, updateMessageStatusInConversation } from '@/store/slices/messagesSlice';
-import { sendMessage, updateConversationStatus, addMessage, clearConversation } from '@/store/slices/conversationsSlice';
+import { sendMessage, updateConversationStatus, addMessage, clearConversation, setAgentEnabled } from '@/store/slices/conversationsSlice';
 import MessageBubble from './MessageBubble';
 import MessageInput from './MessageInput';
 import ContactPanel from './ContactPanel';
@@ -11,7 +11,7 @@ import Avatar from '@/components/ui/Avatar';
 import { MessagesSkeleton } from '@/components/ui/Skeletons';
 import { formatDateSeparator, shouldShowDateSeparator, generateId } from '@/lib/utils';
 import {
-  Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, ArrowLeft
+  Search, Phone, Video, MoreVertical, Info, CheckCheck, Clock, ArrowLeft, Bot, Loader2
 } from 'lucide-react';
 import { Message } from '@/types';
 import { fetchTemplates } from '@/store/slices/templatesSlice';
@@ -35,6 +35,7 @@ export default function ChatWindow() {
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [referencedMsgId, setReferencedMsgId] = useState<string | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
+  const [agentToggling, setAgentToggling] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesAreaRef = useRef<HTMLDivElement>(null);
   const prevConvIdRef = useRef<string | null>(null);
@@ -46,6 +47,22 @@ export default function ChatWindow() {
       dispatch(fetchTemplates());
     }
   }, [selectedId, dispatch]);
+
+  const toggleAgent = async () => {
+    if (!selectedId || !conversation) return;
+    const next = !conversation.agentEnabled;
+    setAgentToggling(true);
+    try {
+      await fetch('/api/conversations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedId, agentEnabled: next }),
+      });
+      dispatch(setAgentEnabled({ id: selectedId, enabled: next }));
+    } finally {
+      setAgentToggling(false);
+    }
+  };
 
   // Poll for new incoming messages every 3 seconds; also poll immediately on tab focus
   useEffect(() => {
@@ -260,6 +277,25 @@ export default function ChatWindow() {
             <button className="hidden md:flex p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Voice Call">
               <Phone size={18} className="text-[#54656f] dark:text-[#8696a0]" />
             </button>
+            {/* AI Agent toggle */}
+            <button
+              onClick={toggleAgent}
+              disabled={agentToggling}
+              title={conversation?.agentEnabled ? 'AI Agent ON — click to disable' : 'AI Agent OFF — click to enable'}
+              className={`relative p-2 rounded-full transition-all ${
+                conversation?.agentEnabled
+                  ? 'bg-[#25D366]/15 text-[#25D366] hover:bg-[#25D366]/25'
+                  : 'hover:bg-gray-200 dark:hover:bg-[#2a3942] text-[#54656f] dark:text-[#8696a0]'
+              }`}
+            >
+              {agentToggling
+                ? <Loader2 size={18} className="animate-spin" />
+                : <Bot size={18} />}
+              {conversation?.agentEnabled && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-[#25D366] rounded-full ring-1 ring-white dark:ring-[#111b21]" />
+              )}
+            </button>
+
             <button onClick={() => setShowContactPanel(!showContactPanel)} className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors" title="Contact Info">
               <Info size={18} className={showContactPanel ? 'text-[#25D366]' : 'text-[#54656f] dark:text-[#8696a0]'} />
             </button>
