@@ -3,16 +3,48 @@ import getMongoClient from '@/lib/mongodb';
 import { db } from '@/db';
 import { messages, conversations } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { sendRichTemplateMessage } from '@/lib/whatsapp-api';
+import { sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
 import {
   compileFlow, resolveNext, hasOnward, quickReplyButtons,
-  templateSendInfo, templatesInFlow, type Flow, type FlowButton,
+  templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
+  type Flow, type FlowButton, type FlowNode,
 } from '@/lib/flow-engine';
 
-/** Body params + header media configured for a node at launch time. */
-function nodeParams(flow: Flow, nodeId: string): { bodyParams: string[]; headerMediaUrl?: string } {
-  const tp = flow.templateParams?.[nodeId];
-  return { bodyParams: tp?.bodyParams ?? [], headerMediaUrl: tp?.headerMediaUrl || undefined };
+/** Send a template node with its configured params (handles MPM/catalog). Returns the wamid. */
+async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise<string | undefined> {
+  const node = flow.nodes.find(n => n.id === nodeId) as FlowNode | undefined;
+  const info = templateSendInfo(node);
+  const t = getTemplate(node);
+  if (!info || !t) return undefined;
+
+  const p = flow.templateParams?.[nodeId] ?? { bodyParams: [] };
+  const { isMPM, isCatalog } = templateKindFlags(t);
+
+  if (isMPM && p.thumbnailProductRetailerId && p.mpmSections?.length) {
+    const sections = p.mpmSections
+      .map(s => ({
+        title: s.title?.trim() || 'Products',
+        product_items: (s.productIds ?? '').split(',').map(id => ({ product_retailer_id: id.trim() })).filter(x => x.product_retailer_id),
+      }))
+      .filter(s => s.product_items.length > 0);
+    const res = await sendMPMTemplateMessage({
+      to, templateName: info.name, language: info.language,
+      headerParam: p.headerParam || undefined,
+      bodyParams: p.bodyParams ?? [],
+      thumbnailProductRetailerId: p.thumbnailProductRetailerId,
+      sections,
+    });
+    return res?.messages?.[0]?.id;
+  }
+
+  const res = await sendRichTemplateMessage({
+    to, templateName: info.name, language: info.language,
+    bodyParams: p.bodyParams ?? [],
+    headerParam: p.headerParam || undefined,
+    headerMediaUrl: p.headerMediaUrl || undefined,
+    isCatalogTemplate: isCatalog,
+  });
+  return res?.messages?.[0]?.id;
 }
 
 const DB    = 'nibiraponcollections';
@@ -110,17 +142,9 @@ export async function startRun(opts: {
   const info = templateSendInfo(rootNode);
   if (!info) return { ok: false, error: 'Root node is not a valid template' };
 
-  const p = nodeParams(opts.flow, opts.rootNodeId);
   let waId: string | undefined;
   try {
-    const res = await sendRichTemplateMessage({
-      to: opts.phone,
-      templateName: info.name,
-      language: info.language,
-      bodyParams: p.bodyParams,
-      headerMediaUrl: p.headerMediaUrl,
-    });
-    waId = res?.messages?.[0]?.id;
+    waId = await sendNodeTemplate(opts.flow, opts.rootNodeId, opts.phone);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'send failed' };
   }
@@ -196,14 +220,9 @@ export async function advanceRunOnButton(opts: {
   const info = templateSendInfo(nextNode);
   if (!info) return false;
 
-  const p = nodeParams(flow as unknown as Flow, nextId);
   let waId: string | undefined;
   try {
-    const res = await sendRichTemplateMessage({
-      to: opts.phone, templateName: info.name, language: info.language,
-      bodyParams: p.bodyParams, headerMediaUrl: p.headerMediaUrl,
-    });
-    waId = res?.messages?.[0]?.id;
+    waId = await sendNodeTemplate(flow as unknown as Flow, nextId, opts.phone);
     console.log(`[flow] sent next template "${info.name}" → waId=${waId ?? 'none'}`);
   } catch (e) {
     console.error(`[flow] advance send failed for template "${info.name}":`, e instanceof Error ? e.message : e);

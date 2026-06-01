@@ -4,7 +4,14 @@ import type { Template } from '@/types';
 
 export interface FlowNode { id: string; type?: string; data?: Record<string, unknown>; }
 export interface FlowEdge { id: string; source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null; }
-export interface NodeParams { bodyParams: string[]; headerMediaUrl?: string }
+export interface NodeParams {
+  bodyParams: string[];
+  headerParam?: string;        // header TEXT {{1}}
+  headerMediaUrl?: string;     // header IMAGE/VIDEO/DOCUMENT link
+  // Multi-product / catalog templates
+  thumbnailProductRetailerId?: string;
+  mpmSections?: { title: string; productIds: string }[];  // productIds: comma-separated
+}
 
 export interface Flow {
   _id?: string;
@@ -48,23 +55,49 @@ export function templateSendInfo(node: FlowNode | undefined): { name: string; la
   return { name: t.name, language: t.language || 'en' };
 }
 
+/** Whether a template is a multi-product (MPM) or catalog template. */
+export function templateKindFlags(t: Template): { isMPM: boolean; isCatalog: boolean } {
+  const buttons = t.components.find(c => c.type === 'BUTTONS')?.buttons ?? [];
+  const isMPM     = buttons.some(b => String(b.type).toUpperCase() === 'MPM');
+  const isCatalog = buttons.some(b => String(b.type).toUpperCase() === 'CATALOG');
+  return { isMPM, isCatalog };
+}
+
+function countPlaceholders(text: string): number {
+  return new Set([...(text ?? '').matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map(m => m[1])).size;
+}
+
 /** What a template node needs filled in before it can be sent. */
 export interface TemplateParamSpec {
   nodeId: string;
   templateName: string;
-  bodyParams: number;        // count of distinct {{n}} in the BODY
-  needsHeaderMedia: boolean;  // header is IMAGE/VIDEO/DOCUMENT
+  bodyParams: number;          // distinct {{n}} in the BODY
+  headerTextParams: number;    // distinct {{n}} in a TEXT header
+  needsHeaderMedia: boolean;   // header is IMAGE/VIDEO/DOCUMENT
   headerFormat?: string;
+  isMPM: boolean;              // multi-product template (needs product IDs + thumbnail)
+  isCatalog: boolean;          // catalog template (needs thumbnail)
 }
 
 export function templateParamSpec(node: FlowNode): TemplateParamSpec | null {
   const t = getTemplate(node);
   if (!t?.name) return null;
   const body = t.components.find(c => c.type === 'BODY')?.text ?? '';
-  const nums = new Set([...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map(m => m[1]));
   const header = t.components.find(c => c.type === 'HEADER');
   const needsHeaderMedia = !!header?.format && header.format !== 'TEXT';
-  return { nodeId: node.id, templateName: t.name, bodyParams: nums.size, needsHeaderMedia, headerFormat: header?.format };
+  const headerTextParams = header?.format === 'TEXT' ? countPlaceholders(header.text ?? '') : 0;
+  const { isMPM, isCatalog } = templateKindFlags(t);
+  return {
+    nodeId: node.id, templateName: t.name,
+    bodyParams: countPlaceholders(body),
+    headerTextParams, needsHeaderMedia, headerFormat: header?.format,
+    isMPM, isCatalog,
+  };
+}
+
+/** Does this template require any input before launch? */
+export function specNeedsConfig(s: TemplateParamSpec): boolean {
+  return s.bodyParams > 0 || s.headerTextParams > 0 || s.needsHeaderMedia || s.isMPM || s.isCatalog;
 }
 
 /** Param specs for every template node in the flow. */
