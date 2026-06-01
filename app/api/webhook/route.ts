@@ -5,7 +5,7 @@ import {
   webhookEvents, leads, messageReactions,
   broadcastRecipients, broadcastCampaigns,
 } from '@/db/schema';
-import { eq, and, sql, asc } from 'drizzle-orm';
+import { eq, and, sql, desc } from 'drizzle-orm';
 import { verifyWebhook, sendTextMessage, sendMediaMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
 import { getSendUrl } from '@/lib/inventory-media';
@@ -326,7 +326,12 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     .limit(1)
     .then(r => r[0]));
 
-  if (conv?.agentEnabled && msgText) {
+  // Only reply to messages the customer typed themselves (type "text").
+  // Button taps on templates / utility messages arrive as "button" or
+  // "interactive" — the agent must NOT respond to those.
+  const isSelfTyped = msg.type === 'text';
+
+  if (conv?.agentEnabled && isSelfTyped && msgText) {
     await agentReply({
       conversationId,
       toPhone: fromPhone,
@@ -350,13 +355,16 @@ async function agentReply({
 }) {
   console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}"`);
 
-  // Last 20 messages as context (oldest first)
-  const history = await db
+  // Most recent 30 messages as context, then put them back in chronological order.
+  // (Ordering desc + limit gets the LATEST 30; asc + limit would wrongly grab the
+  // oldest 30 and lose recent context in long chats.)
+  const recent = await db
     .select({ text: messages.text, isOutgoing: messages.isOutgoing })
     .from(messages)
     .where(and(eq(messages.conversationId, conversationId), eq(messages.isDeleted, false)))
-    .orderBy(asc(messages.sentAt))
-    .limit(20);
+    .orderBy(desc(messages.sentAt))
+    .limit(30);
+  const history = recent.reverse();
 
   // Map to AgentMessage (skip the very last message — it's the current user message)
   const chatHistory: AgentMessage[] = history
