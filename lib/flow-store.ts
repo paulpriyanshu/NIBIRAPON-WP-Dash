@@ -9,6 +9,12 @@ import {
   templateSendInfo, templatesInFlow, type Flow, type FlowButton,
 } from '@/lib/flow-engine';
 
+/** Body params + header media configured for a node at launch time. */
+function nodeParams(flow: Flow, nodeId: string): { bodyParams: string[]; headerMediaUrl?: string } {
+  const tp = flow.templateParams?.[nodeId];
+  return { bodyParams: tp?.bodyParams ?? [], headerMediaUrl: tp?.headerMediaUrl || undefined };
+}
+
 const DB    = 'nibiraponcollections';
 const FLOWS = 'flows';
 const RUNS  = 'flow_runs';
@@ -99,21 +105,20 @@ export async function startRun(opts: {
   contactId: string | null;
   conversationId: string | null;
   bizPhone: string;
-  bodyParams?: string[];
-  headerMediaUrl?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const rootNode = opts.flow.nodes.find(n => n.id === opts.rootNodeId);
   const info = templateSendInfo(rootNode);
   if (!info) return { ok: false, error: 'Root node is not a valid template' };
 
+  const p = nodeParams(opts.flow, opts.rootNodeId);
   let waId: string | undefined;
   try {
     const res = await sendRichTemplateMessage({
       to: opts.phone,
       templateName: info.name,
       language: info.language,
-      bodyParams: opts.bodyParams ?? [],
-      headerMediaUrl: opts.headerMediaUrl || undefined,
+      bodyParams: p.bodyParams,
+      headerMediaUrl: p.headerMediaUrl,
     });
     waId = res?.messages?.[0]?.id;
   } catch (e) {
@@ -147,6 +152,7 @@ export async function startRun(opts: {
     updatedAt:         now,
     steps:             [],
   } satisfies Omit<FlowRun, '_id'>);
+  console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(quickReplyButtons(rootNode))}`);
 
   return { ok: true };
 }
@@ -162,32 +168,45 @@ export async function advanceRunOnButton(opts: {
 }): Promise<boolean> {
   const runs = await runsColl();
   const run = await runs.findOne({ phone: opts.phone, status: 'active' });
-  if (!run) return false;
-
-  // Ignore taps on a stale template (customer scrolled up and tapped an old one).
-  if (opts.contextMsgId && run.lastTemplateMsgId && opts.contextMsgId !== run.lastTemplateMsgId) {
+  if (!run) {
+    console.log(`[flow] no active run for phone=${opts.phone}`);
     return false;
+  }
+
+  // Stale tap (customer scrolled up and tapped an old template) — log but don't
+  // hard-block; some WhatsApp payloads omit/alter context.id.
+  if (opts.contextMsgId && run.lastTemplateMsgId && opts.contextMsgId !== run.lastTemplateMsgId) {
+    console.warn(`[flow] context mismatch (got ${opts.contextMsgId}, expected ${run.lastTemplateMsgId}) — advancing anyway`);
   }
 
   const flows = await flowsColl();
   let flow;
   try { flow = await flows.findOne({ _id: new ObjectId(run.flowId) }); } catch { return false; }
-  if (!flow || flow.status !== 'live') return false;
+  if (!flow || flow.status !== 'live') {
+    console.log(`[flow] flow ${run.flowId} not live (status=${flow?.status})`);
+    return false;
+  }
 
   const compiled = compileFlow(flow as unknown as Flow);
   const nextId = resolveNext(compiled, run.currentNodeId, opts.buttonText);
+  console.log(`[flow] advance phone=${opts.phone} node=${run.currentNodeId} button="${opts.buttonText}" → next=${nextId ?? 'none'} (buttons: ${JSON.stringify(compiled.transitions[run.currentNodeId]?.buttons ?? {})})`);
   if (!nextId) return false;
 
   const nextNode = compiled.nodesById[nextId];
   const info = templateSendInfo(nextNode);
   if (!info) return false;
 
+  const p = nodeParams(flow as unknown as Flow, nextId);
   let waId: string | undefined;
   try {
-    const res = await sendRichTemplateMessage({ to: opts.phone, templateName: info.name, language: info.language });
+    const res = await sendRichTemplateMessage({
+      to: opts.phone, templateName: info.name, language: info.language,
+      bodyParams: p.bodyParams, headerMediaUrl: p.headerMediaUrl,
+    });
     waId = res?.messages?.[0]?.id;
+    console.log(`[flow] sent next template "${info.name}" → waId=${waId ?? 'none'}`);
   } catch (e) {
-    console.error('[flow] advance send failed:', e instanceof Error ? e.message : e);
+    console.error(`[flow] advance send failed for template "${info.name}":`, e instanceof Error ? e.message : e);
     return false;
   }
 

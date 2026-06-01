@@ -36,8 +36,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const { recipients = [], bodyParams = [], headerMediaUrl = '' } =
-      await req.json() as { recipients: string[]; bodyParams?: string[]; headerMediaUrl?: string };
+    const { recipients = [] } = await req.json() as { recipients: string[] };
 
     const flows = await flowsColl();
     const flowDoc = await flows.findOne({ _id: new ObjectId(id) });
@@ -70,8 +69,6 @@ export async function POST(
           contactId,
           conversationId,
           bizPhone,
-          bodyParams,
-          headerMediaUrl,
         });
         if (r.ok) started++;
         else failures.push({ phone, error: r.error ?? 'failed' });

@@ -10,7 +10,11 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const { status, rootNodeId } = await req.json() as { status: 'live' | 'draft'; rootNodeId?: string };
+    const { status, rootNodeId, templateParams } = await req.json() as {
+      status: 'live' | 'draft';
+      rootNodeId?: string;
+      templateParams?: Record<string, { bodyParams: string[]; headerMediaUrl?: string }>;
+    };
 
     if (status !== 'live' && status !== 'draft') {
       return NextResponse.json({ error: 'status must be "live" or "draft"' }, { status: 400 });
@@ -31,7 +35,10 @@ export async function PATCH(
       }
       await flows.updateOne(
         { _id: new ObjectId(id) },
-        { $set: { status: 'live', rootNodeId: chosenRoot, activatedAt: new Date(), updatedAt: new Date() } },
+        { $set: {
+          status: 'live', rootNodeId: chosenRoot, activatedAt: new Date(), updatedAt: new Date(),
+          ...(templateParams ? { templateParams } : {}),
+        } },
       );
       return NextResponse.json({ ok: true, status: 'live', rootNodeId: chosenRoot });
     }

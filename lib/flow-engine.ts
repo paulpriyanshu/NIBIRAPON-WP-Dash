@@ -4,6 +4,8 @@ import type { Template } from '@/types';
 
 export interface FlowNode { id: string; type?: string; data?: Record<string, unknown>; }
 export interface FlowEdge { id: string; source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null; }
+export interface NodeParams { bodyParams: string[]; headerMediaUrl?: string }
+
 export interface Flow {
   _id?: string;
   name: string;
@@ -11,6 +13,8 @@ export interface Flow {
   edges: FlowEdge[];
   status?: 'draft' | 'live';
   rootNodeId?: string | null;
+  // Per-node send config (body variables + header media), filled at launch.
+  templateParams?: Record<string, NodeParams>;
 }
 
 export interface FlowButton { index: number; text: string; }
@@ -42,6 +46,33 @@ export function templateSendInfo(node: FlowNode | undefined): { name: string; la
   const t = getTemplate(node);
   if (!t?.name) return null;
   return { name: t.name, language: t.language || 'en' };
+}
+
+/** What a template node needs filled in before it can be sent. */
+export interface TemplateParamSpec {
+  nodeId: string;
+  templateName: string;
+  bodyParams: number;        // count of distinct {{n}} in the BODY
+  needsHeaderMedia: boolean;  // header is IMAGE/VIDEO/DOCUMENT
+  headerFormat?: string;
+}
+
+export function templateParamSpec(node: FlowNode): TemplateParamSpec | null {
+  const t = getTemplate(node);
+  if (!t?.name) return null;
+  const body = t.components.find(c => c.type === 'BODY')?.text ?? '';
+  const nums = new Set([...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map(m => m[1]));
+  const header = t.components.find(c => c.type === 'HEADER');
+  const needsHeaderMedia = !!header?.format && header.format !== 'TEXT';
+  return { nodeId: node.id, templateName: t.name, bodyParams: nums.size, needsHeaderMedia, headerFormat: header?.format };
+}
+
+/** Param specs for every template node in the flow. */
+export function flowParamSpecs(flow: Flow): TemplateParamSpec[] {
+  return (flow.nodes ?? [])
+    .filter(n => n.type === 'templateNode')
+    .map(templateParamSpec)
+    .filter((s): s is TemplateParamSpec => !!s);
 }
 
 /** Distinct WhatsApp template names referenced anywhere in the flow. */

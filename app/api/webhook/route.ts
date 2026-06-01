@@ -334,6 +334,7 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   if (isButtonTap) {
     const buttonText   = templateData?.buttonTitle || msgText || '';
     const contextMsgId = templateData?.contextMsgId || msg.context?.id || undefined;
+    console.log(`[flow] button tap from=${fromPhone} type=${msg.type} text="${buttonText}" context=${contextMsgId ?? 'none'}`);
     if (buttonText) {
       await advanceRunOnButton({
         phone: fromPhone,

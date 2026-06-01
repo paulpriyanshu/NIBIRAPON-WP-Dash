@@ -2,9 +2,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Radio, Play, Pause, Send, Loader2, Users, CheckCircle2,
-  Megaphone, AlertTriangle, RefreshCw, Layers, ChevronDown, ChevronUp,
+  Megaphone, AlertTriangle, RefreshCw, Layers, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
-import { findRootNodes, getTemplate, quickReplyButtons, type Flow as EngineFlow } from '@/lib/flow-engine';
+import {
+  findRootNodes, getTemplate, flowParamSpecs,
+  type Flow as EngineFlow, type NodeParams,
+} from '@/lib/flow-engine';
 
 interface Flow extends EngineFlow {
   _id: string;
@@ -14,21 +17,12 @@ interface Flow extends EngineFlow {
 }
 interface RunStats { active: number; completed: number; stopped: number; total: number; }
 
-/** Count distinct {{n}} placeholders in a template's BODY. */
-function bodyParamCount(flow: Flow, nodeId: string): number {
-  const node = flow.nodes.find(n => n.id === nodeId);
-  const body = getTemplate(node)?.components.find(c => c.type === 'BODY')?.text ?? '';
-  const nums = new Set([...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map(m => m[1]));
-  return nums.size;
-}
-function headerIsMedia(flow: Flow, nodeId: string): boolean {
-  const node = flow.nodes.find(n => n.id === nodeId);
-  const header = getTemplate(node)?.components.find(c => c.type === 'HEADER');
-  return !!header?.format && header.format !== 'TEXT';
-}
+const inputCls = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50';
 
 function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
   const roots = findRootNodes(flow);
+  const specs = flowParamSpecs(flow);
+  const needFill = specs.filter(s => s.bodyParams > 0 || s.needsHeaderMedia);
   const isLive = flow.status === 'live';
 
   const [rootId, setRootId]     = useState<string>(flow.rootNodeId && roots.includes(flow.rootNodeId) ? flow.rootNodeId : roots[0] ?? '');
@@ -36,37 +30,82 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
   const [err, setErr]           = useState('');
   const [stats, setStats]       = useState<RunStats | null>(null);
 
-  /* launch form */
-  const [open, setOpen]         = useState(false);
-  const [recipients, setRecipients] = useState('');
-  const [params, setParams]     = useState<string[]>([]);
-  const [mediaUrl, setMediaUrl] = useState('');
-  const [launching, setLaunching] = useState(false);
-  const [result, setResult]     = useState('');
+  /* launch (params) form */
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [tp, setTp] = useState<Record<string, NodeParams>>(() => {
+    const init: Record<string, NodeParams> = {};
+    for (const s of specs) {
+      const saved = flow.templateParams?.[s.nodeId];
+      init[s.nodeId] = {
+        bodyParams: Array.from({ length: s.bodyParams }, (_, i) => saved?.bodyParams?.[i] ?? ''),
+        headerMediaUrl: saved?.headerMediaUrl ?? '',
+      };
+    }
+    return init;
+  });
 
-  const activeRoot = flow.rootNodeId || rootId;
-  const rootTemplate = getTemplate(flow.nodes.find(n => n.id === activeRoot));
-  const nParams = activeRoot ? bodyParamCount(flow, activeRoot) : 0;
-  const needsMedia = activeRoot ? headerIsMedia(flow, activeRoot) : false;
+  /* broadcast form */
+  const [bcOpen, setBcOpen]     = useState(false);
+  const [recipients, setRecipients] = useState('');
+  const [launching, setLaunching]   = useState(false);
+  const [result, setResult]         = useState('');
 
   const loadStats = useCallback(async () => {
     const res = await fetch(`/api/flows/${flow._id}/runs`);
     if (res.ok) setStats(await res.json());
   }, [flow._id]);
-
   useEffect(() => { if (isLive) loadStats(); }, [isLive, loadStats]);
-  useEffect(() => { setParams(p => Array.from({ length: nParams }, (_, i) => p[i] ?? '')); }, [nParams]);
 
-  const toggle = async () => {
+  const setBody = (nodeId: string, i: number, v: string) =>
+    setTp(p => ({ ...p, [nodeId]: { ...p[nodeId], bodyParams: p[nodeId].bodyParams.map((x, idx) => idx === i ? v : x) } }));
+  const setHeader = (nodeId: string, v: string) =>
+    setTp(p => ({ ...p, [nodeId]: { ...p[nodeId], headerMediaUrl: v } }));
+
+  const onLaunchClick = () => {
+    setErr('');
+    if (roots.length === 0) { setErr('No starting template'); return; }
+    // If nothing to fill and a single clear root, go live straight away.
+    if (needFill.length === 0 && roots.length <= 1) { goLive(); return; }
+    setLaunchOpen(true);
+  };
+
+  const goLive = async () => {
+    // Validate every required field is filled.
+    const missing: string[] = [];
+    for (const s of needFill) {
+      const v = tp[s.nodeId];
+      if (s.bodyParams > 0 && v.bodyParams.some(x => !x.trim())) missing.push(s.templateName);
+      if (s.needsHeaderMedia && !v.headerMediaUrl?.trim()) missing.push(`${s.templateName} (media)`);
+    }
+    if (missing.length) { setErr(`Fill all parameters: ${[...new Set(missing)].join(', ')}`); return; }
+
     setToggling(true); setErr('');
-    const next = isLive ? 'draft' : 'live';
+    const templateParams: Record<string, NodeParams> = {};
+    for (const s of specs) {
+      templateParams[s.nodeId] = {
+        bodyParams: (tp[s.nodeId]?.bodyParams ?? []).slice(0, s.bodyParams),
+        ...(s.needsHeaderMedia ? { headerMediaUrl: tp[s.nodeId]?.headerMediaUrl?.trim() } : {}),
+      };
+    }
     const res = await fetch(`/api/flows/${flow._id}/status`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: next, rootNodeId: rootId || undefined }),
+      body: JSON.stringify({ status: 'live', rootNodeId: rootId || undefined, templateParams }),
     });
     const d = await res.json();
     setToggling(false);
     if (!res.ok) { setErr(d.error || 'Failed'); return; }
+    setLaunchOpen(false);
+    onChanged();
+  };
+
+  const pause = async () => {
+    setToggling(true); setErr('');
+    const res = await fetch(`/api/flows/${flow._id}/status`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'draft' }),
+    });
+    setToggling(false);
+    if (!res.ok) { const d = await res.json(); setErr(d.error || 'Failed'); return; }
     onChanged();
   };
 
@@ -76,7 +115,7 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
     setLaunching(true); setResult('');
     const res = await fetch(`/api/flows/${flow._id}/launch`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipients: list, bodyParams: params, headerMediaUrl: mediaUrl }),
+      body: JSON.stringify({ recipients: list }),
     });
     const d = await res.json();
     setLaunching(false);
@@ -85,6 +124,8 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
     setRecipients('');
     loadStats();
   };
+
+  const rootTemplate = getTemplate(flow.nodes.find(n => n.id === (flow.rootNodeId || rootId)));
 
   return (
     <div className={`bg-[#1f2c34] border rounded-xl overflow-hidden ${isLive ? 'border-[#25D366]/40' : 'border-white/10'}`}>
@@ -103,23 +144,12 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
           <div className="flex items-center gap-2 mt-0.5 text-white/30 text-[10px]">
             <span>{flow.nodeCount ?? flow.nodes?.length ?? 0} nodes</span>
             <span>·</span>
-            <span>{roots.length} start{roots.length !== 1 ? 's' : ''}</span>
+            <span>{specs.length} template{specs.length !== 1 ? 's' : ''}</span>
             {isLive && stats && <><span>·</span><span className="text-[#25D366]/70">{stats.active} active</span><span>{stats.completed} done</span></>}
           </div>
         </div>
 
-        {/* root picker (only when several possible starts and not yet live) */}
-        {!isLive && roots.length > 1 && (
-          <select value={rootId} onChange={e => setRootId(e.target.value)}
-            className="bg-[#111b21] border border-white/10 rounded-lg px-2 py-1.5 text-white/70 text-[10px] focus:outline-none focus:border-[#25D366]/50 max-w-[140px]">
-            {roots.map(r => {
-              const t = getTemplate(flow.nodes.find(n => n.id === r));
-              return <option key={r} value={r}>{t?.name ?? r}</option>;
-            })}
-          </select>
-        )}
-
-        <button onClick={toggle} disabled={toggling || roots.length === 0}
+        <button onClick={isLive ? pause : onLaunchClick} disabled={toggling || roots.length === 0}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium shrink-0 transition-all disabled:opacity-40 ${
             isLive ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25' : 'bg-[#25D366] text-black hover:bg-[#22c55e]'
           }`}>
@@ -131,37 +161,75 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
       {err && <p className="px-4 pb-2 text-red-400 text-[11px] flex items-center gap-1"><AlertTriangle size={11} /> {err}</p>}
       {roots.length === 0 && <p className="px-4 pb-3 text-amber-400/70 text-[10px]">No starting template — connect a template with no incoming arrow.</p>}
 
-      {/* live: broadcast root template */}
+      {/* ── Launch params form ─────────────────────────────────────── */}
+      {launchOpen && !isLive && (
+        <div className="border-t border-white/8 px-4 py-3 space-y-3 bg-[#111b21]/40">
+          <div className="flex items-center justify-between">
+            <p className="text-white text-xs font-medium">Fill template parameters to go live</p>
+            <button onClick={() => setLaunchOpen(false)} className="text-white/30 hover:text-white"><X size={13} /></button>
+          </div>
+
+          {roots.length > 1 && (
+            <div>
+              <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Start template</label>
+              <select value={rootId} onChange={e => setRootId(e.target.value)} className={inputCls}>
+                {roots.map(r => {
+                  const t = getTemplate(flow.nodes.find(n => n.id === r));
+                  return <option key={r} value={r}>{t?.name ?? r}</option>;
+                })}
+              </select>
+            </div>
+          )}
+
+          {needFill.length === 0 ? (
+            <p className="text-white/35 text-[11px]">No templates need parameters. Click Go live.</p>
+          ) : needFill.map(s => (
+            <div key={s.nodeId} className="bg-[#1f2c34] border border-white/8 rounded-lg p-3 space-y-2">
+              <p className="text-white/70 text-[11px] font-medium flex items-center gap-1.5">
+                <Layers size={11} className="text-[#25D366]" /> {s.templateName}
+                {s.nodeId === rootId && <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full">start</span>}
+              </p>
+              {Array.from({ length: s.bodyParams }).map((_, i) => (
+                <input key={i} value={tp[s.nodeId]?.bodyParams[i] ?? ''} onChange={e => setBody(s.nodeId, i, e.target.value)}
+                  placeholder={`Body variable {{${i + 1}}}`} className={inputCls} />
+              ))}
+              {s.needsHeaderMedia && (
+                <input value={tp[s.nodeId]?.headerMediaUrl ?? ''} onChange={e => setHeader(s.nodeId, e.target.value)}
+                  placeholder={`${(s.headerFormat ?? 'media').toLowerCase()} header URL (https://…)`} className={inputCls} />
+              )}
+            </div>
+          ))}
+
+          <div className="flex justify-end">
+            <button onClick={goLive} disabled={toggling}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs bg-[#25D366] text-black font-medium hover:bg-[#22c55e] disabled:opacity-40 transition-all">
+              {toggling ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Go live
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Broadcast root (when live) ─────────────────────────────── */}
       {isLive && (
         <div className="border-t border-white/8">
-          <button onClick={() => setOpen(o => !o)}
+          <button onClick={() => setBcOpen(o => !o)}
             className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] text-white/60 hover:bg-white/[0.03] transition-colors">
             <span className="flex items-center gap-1.5"><Megaphone size={12} className="text-[#25D366]" /> Broadcast root template{rootTemplate ? ` — ${rootTemplate.name}` : ''}</span>
-            {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {bcOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>
 
-          {open && (
+          {bcOpen && (
             <div className="px-4 pb-4 space-y-2.5">
               <div className="bg-[#111b21] border border-white/8 rounded-lg px-3 py-2 text-white/35 text-[10px] flex gap-1.5">
                 <Layers size={11} className="text-[#25D366]/60 shrink-0 mt-0.5" />
-                Sends the root template to these contacts and starts a flow run for each. Their button taps then advance the flow automatically.
+                Sends the root template (with the parameters you set) to these contacts and starts a run for each. Button taps then advance the flow automatically.
               </div>
               <div>
                 <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 flex items-center gap-1"><Users size={9} /> Recipients</label>
                 <textarea value={recipients} onChange={e => setRecipients(e.target.value)} rows={2}
                   placeholder="Phone numbers, comma or newline separated — e.g. 919812345678, 919876543210"
-                  className="w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50 resize-none" />
+                  className={`${inputCls} resize-none`} />
               </div>
-              {params.map((v, i) => (
-                <input key={i} value={v} onChange={e => setParams(p => p.map((x, idx) => idx === i ? e.target.value : x))}
-                  placeholder={`Body variable {{${i + 1}}}`}
-                  className="w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50" />
-              ))}
-              {needsMedia && (
-                <input value={mediaUrl} onChange={e => setMediaUrl(e.target.value)}
-                  placeholder="Header media URL (https://…)"
-                  className="w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50" />
-              )}
               <div className="flex items-center justify-between">
                 {result && <span className={`text-[11px] ${result.startsWith('✓') ? 'text-[#25D366]' : 'text-red-400'}`}>{result}</span>}
                 <button onClick={launch} disabled={launching} className="ml-auto flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs bg-[#25D366] text-black font-medium hover:bg-[#22c55e] disabled:opacity-40 transition-all">
@@ -187,7 +255,6 @@ export default function ActiveFlowsPanel() {
     if (res.ok) setFlows(await res.json());
     setLoading(false);
   }, []);
-
   useEffect(() => { load(); }, [load]);
 
   const liveCount = flows.filter(f => f.status === 'live').length;
@@ -213,7 +280,7 @@ export default function ActiveFlowsPanel() {
         <div className="bg-[#111b21] border border-white/8 rounded-xl px-4 py-3 flex gap-2 my-4">
           <CheckCircle2 size={13} className="text-[#25D366]/60 shrink-0 mt-0.5" />
           <p className="text-white/40 text-[11px] leading-relaxed">
-            <strong className="text-white/60">Launch</strong> a flow to make it live, then <strong className="text-white/60">Broadcast root template</strong> to the contacts you choose. Their quick-reply button taps drive the rest automatically. Templates in a live flow are locked from independent broadcast.
+            <strong className="text-white/60">Launch</strong> a flow — you'll fill the parameters for every template it uses — then <strong className="text-white/60">Broadcast root template</strong> to the contacts you choose. Their quick-reply taps drive the rest. Live-flow templates are locked from independent broadcast.
           </p>
         </div>
 
