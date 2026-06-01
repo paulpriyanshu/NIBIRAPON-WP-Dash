@@ -363,3 +363,49 @@ export const broadcastRecipientsRelations = relations(broadcastRecipients, ({ on
   campaign: one(broadcastCampaigns, { fields: [broadcastRecipients.campaignId], references: [broadcastCampaigns.id] }),
   contact:  one(contacts, { fields: [broadcastRecipients.contactId], references: [contacts.id] }),
 }));
+
+// ─── Agent: settings ──────────────────────────────────────────────────────────
+// Single-row table — only one record ever exists (id is a fixed UUID).
+
+export const agentSettings = pgTable('agent_settings', {
+  id:           uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  agentName:    varchar('agent_name', { length: 50 }).notNull().default('Riya'),
+  systemPrompt: text('system_prompt').notNull().default(''),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─── Agent: product catalog ───────────────────────────────────────────────────
+
+export const catalogProducts = pgTable('catalog_products', {
+  id:          uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  name:        varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
+  priceRange:  varchar('price_range', { length: 100 }),
+  category:    varchar('category', { length: 100 }),
+  fabric:      varchar('fabric', { length: 100 }),
+  occasions:   text('occasions'),
+  imageUrl:    text('image_url'),
+  isActive:    boolean('is_active').notNull().default(true),
+  // Embedding stored as JSON number array (cosine similarity computed in app)
+  embedding:   jsonb('embedding').$type<number[]>(),
+  syncedAt:    timestamp('synced_at', { withTimezone: true }),
+  createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:   timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('catalog_products_active_idx').on(t.isActive),
+  index('catalog_products_category_idx').on(t.category),
+]);
+
+// ─── Agent: draft messages ────────────────────────────────────────────────────
+
+export const agentDrafts = pgTable('agent_drafts', {
+  id:           uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  name:         varchar('name', { length: 255 }).notNull(),
+  content:      text('content').notNull(),
+  triggerHint:  text('trigger_hint'),  // e.g. "when customer wants to pay"
+  isActive:     boolean('is_active').notNull().default(true),
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('agent_drafts_active_idx').on(t.isActive),
+]);

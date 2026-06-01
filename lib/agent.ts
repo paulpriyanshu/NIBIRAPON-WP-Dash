@@ -1,92 +1,157 @@
 import OpenAI from 'openai';
+import { db } from '@/db';
+import { agentSettings, catalogProducts, agentDrafts } from '@/db/schema';
+import { eq, isNotNull } from 'drizzle-orm';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
 
-// ── Brand / product knowledge ────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `
-You are Riya, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand owned by FemFashion.
+export interface AgentMessage { role: 'user' | 'assistant'; content: string; }
+export interface AgentResult  { reply: string; shouldRespond: boolean; }
+
+// ── Cosine similarity (used for catalog semantic search) ─────────────────────
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (!normA || !normB) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// ── Catalog semantic search ──────────────────────────────────────────────────
+
+async function searchCatalog(query: string, topN = 4): Promise<string> {
+  // Fetch all synced products (those with an embedding)
+  const synced = await db
+    .select()
+    .from(catalogProducts)
+    .where(
+      // Only return active products that have been synced
+      isNotNull(catalogProducts.embedding)
+    );
+
+  if (synced.length === 0) return '';
+
+  // Embed the user query
+  const embRes = await openai.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: query,
+  });
+  const queryVec = embRes.data[0].embedding;
+
+  // Rank by cosine similarity
+  const scored = synced
+    .filter(p => Array.isArray(p.embedding) && p.embedding.length > 0)
+    .map(p => ({
+      p,
+      score: cosineSimilarity(queryVec, p.embedding as number[]),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topN);
+
+  if (scored.length === 0) return '';
+
+  const lines = scored.map(({ p }) => {
+    const parts = [
+      `• ${p.name}`,
+      p.category    && `(${p.category})`,
+      p.priceRange  && `— ${p.priceRange}`,
+      p.fabric      && `| Fabric: ${p.fabric}`,
+      p.occasions   && `| For: ${p.occasions}`,
+      p.description && `\n  ${p.description}`,
+    ].filter(Boolean);
+    return parts.join(' ');
+  });
+
+  return `## Relevant products from our catalog:\n${lines.join('\n')}`;
+}
+
+// ── Fetch agent settings + drafts ────────────────────────────────────────────
+
+async function getContextData(userMessage: string): Promise<{
+  settingsPrompt: string;
+  agentName: string;
+  catalogContext: string;
+  draftsContext: string;
+}> {
+  const [settingsRow, drafts, catalogCtx] = await Promise.all([
+    db.select().from(agentSettings).limit(1).then(r => r[0]),
+    db.select().from(agentDrafts).where(eq(agentDrafts.isActive, true)),
+    searchCatalog(userMessage).catch(() => ''),
+  ]);
+
+  const agentName     = settingsRow?.agentName    ?? 'Riya';
+  const settingsPrompt = settingsRow?.systemPrompt ?? '';
+
+  let draftsContext = '';
+  if (drafts.length > 0) {
+    const list = drafts
+      .map(d => `### ${d.name}${d.triggerHint ? ` (send ${d.triggerHint})` : ''}\n${d.content}`)
+      .join('\n\n');
+    draftsContext = `## Pre-written messages you can send verbatim:\n${list}`;
+  }
+
+  return { settingsPrompt, agentName, catalogContext: catalogCtx, draftsContext };
+}
+
+// ── Base system prompt ───────────────────────────────────────────────────────
+
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, extra: string): string {
+  return `
+You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion.
 
 ## About Nibirapon & FemFashion
-- **Nibirapon** is FemFashion's flagship saree label, known for quality, elegance, and authenticity.
-- **FemFashion** is the parent company that brings premium Indian ethnic wear to modern women.
-- We sell: Banarasi Silk, Kanjeevaram, Chanderi, Georgette, Linen, Cotton, Organza, and Chiffon sarees.
+- Nibirapon is FemFashion's flagship label known for quality, elegance, and authenticity.
+- We sell: Banarasi Silk, Kanjeevaram, Chanderi, Georgette, Linen, Cotton, Organza, Chiffon sarees.
 - Price range: ₹1,500 (casual Cotton/Linen) → ₹50,000+ (Pure Silk Banarasi/Kanjivaram).
 - Pan-India delivery; COD available on most orders.
-- For bulk/wholesale orders, customers can DM or call our team.
-- Products can be explored at our Instagram page or by asking you directly.
 
-## Common Saree Types We Stock
-| Type | Occasions | Price Range |
-|------|-----------|-------------|
-| Banarasi Silk | Wedding, festival | ₹8,000–₹40,000 |
-| Kanjeevaram | Wedding, ceremony | ₹12,000–₹50,000+ |
-| Chanderi | Office, casual festive | ₹3,000–₹10,000 |
-| Georgette | Party, casual | ₹2,000–₹8,000 |
-| Cotton / Linen | Daily wear | ₹1,500–₹5,000 |
-| Organza | Festive, party | ₹4,000–₹15,000 |
+## Rules
+1. Reply in the SAME language the customer uses (Hindi / Hinglish / English).
+2. Keep replies short and conversational (2-4 sentences unless detail is asked).
+3. ONLY discuss sarees, Indian ethnic wear, fabrics, styling, care, and Nibirapon products.
+4. For unrelated topics say: "I can only help with sarees and Nibirapon products 😊"
+5. Never mention competitor brands.
+6. If you don't know a specific price or product, say so honestly.
+7. When a customer seems ready to buy, gently guide them toward choosing.
+8. If a pre-written message in the DRAFTS section matches the situation, send it verbatim.
 
-## Your Personality & Rules
-1. Be warm, helpful, and knowledgeable — like a trusted stylist.
-2. **Reply in the SAME language the customer uses.** If they write in Hindi (Devanagari or Romanised/Hinglish), respond in the same style. English → English.
-3. Keep replies **short and conversational** (2–4 sentences unless they ask for detail).
-4. **ONLY discuss**: sarees, Indian ethnic wear, fabrics, styling tips, care instructions, Nibirapon products/pricing, ordering process.
-5. If asked something **unrelated to our business** (politics, unrelated products, personal questions, etc.), politely say: "I can only help with sarees and Nibirapon products 😊"
-6. **Never mention competitor brands** (Fabindia, Manyavar, etc.).
-7. If you don't know a specific product or exact price, say honestly: "For the latest catalogue and exact pricing, please share your preference and our team will assist you!"
-8. When a customer seems interested, gently guide them toward choosing — ask about occasion, colour preference, or budget.
-9. Sign off with "– Riya, Nibirapon" only on first replies; skip it in ongoing chat.
+${catalogCtx ? catalogCtx + '\n' : ''}
+${draftsCtx  ? draftsCtx  + '\n' : ''}
+${extra      ? '## Additional instructions from admin:\n' + extra : ''}
 `.trim();
-
-// ── Types ───────────────────────────────────────────────────────────────────
-
-export interface AgentMessage {
-  role: 'user' | 'assistant';
-  content: string;
 }
 
-export interface AgentResult {
-  reply: string;
-  shouldRespond: boolean;
-}
+// ── Meaningful message check ─────────────────────────────────────────────────
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Returns false for messages that don't need a reply (empty, pure punctuation). */
 function isMeaningful(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return false;
-  // Pure punctuation only (no letters / digits)
-  if (/^[.,!?…\-_*#@\s]+$/.test(trimmed)) return false;
+  const t = text.trim();
+  if (t.length === 0) return false;
+  if (/^[.,!?…\-_*#@\s]+$/.test(t)) return false;
   return true;
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
-/**
- * Run the Nibirapon AI agent.
- *
- * @param userMessage  The latest incoming WhatsApp message text
- * @param history      Last N messages in the conversation (oldest first)
- * @returns            { reply, shouldRespond }
- */
 export async function runAgent(
   userMessage: string,
   history: AgentMessage[] = [],
 ): Promise<AgentResult> {
-  if (!isMeaningful(userMessage)) {
-    return { reply: '', shouldRespond: false };
-  }
+  if (!isMeaningful(userMessage)) return { reply: '', shouldRespond: false };
 
-  // Build messages array for OpenAI
-  const chatHistory: OpenAI.Chat.ChatCompletionMessageParam[] = history.map(m => ({
-    role:    m.role,
-    content: m.content,
-  }));
+  const { settingsPrompt, agentName, catalogContext, draftsContext } =
+    await getContextData(userMessage);
+
+  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, settingsPrompt);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...chatHistory,
+    { role: 'system', content: systemPrompt },
+    ...history.map(m => ({ role: m.role, content: m.content })),
     { role: 'user', content: userMessage },
   ];
 
@@ -94,7 +159,7 @@ export async function runAgent(
     const response = await openai.chat.completions.create({
       model:       'gpt-4o-mini',
       messages,
-      max_tokens:  300,
+      max_tokens:  400,
       temperature: 0.7,
     });
 
