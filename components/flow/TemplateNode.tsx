@@ -2,8 +2,18 @@
 import { useState } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import { Layers, X, MessageSquare, Image, FileText } from 'lucide-react';
-import type { Template } from '@/types';
+import { Layers, X, MessageSquare, Image, FileText, CornerUpLeft, ExternalLink, Phone, ShoppingBag } from 'lucide-react';
+import type { Template, TemplateButton } from '@/types';
+
+// Icon per WhatsApp button type — quick-reply buttons are the ones that send a
+// reply you can branch on; URL / phone just open the link / dialer.
+const BUTTON_ICON: Record<TemplateButton['type'], React.ReactNode> = {
+  QUICK_REPLY:  <CornerUpLeft size={10} />,
+  URL:          <ExternalLink size={10} />,
+  PHONE_NUMBER: <Phone size={10} />,
+  CATALOG:      <ShoppingBag size={10} />,
+  MPM:          <ShoppingBag size={10} />,
+};
 
 const CATEGORY_STYLE = {
   MARKETING:      { bg: 'bg-purple-500/20', text: 'text-purple-300', label: 'Marketing' },
@@ -99,12 +109,23 @@ export default function TemplateNode({ id, data, selected }: NodeProps) {
           <p className="text-white/25 text-[9px] italic line-clamp-1">{footer.text}</p>
         )}
 
-        {/* Buttons count */}
+        {/* Buttons — show each one so the flow can branch per button */}
         {buttons?.buttons && buttons.buttons.length > 0 && (
-          <div className="pt-0.5 border-t border-white/5 flex items-center gap-1">
-            <span className="text-white/30 text-[9px]">
-              {buttons.buttons.length} button{buttons.buttons.length > 1 ? 's' : ''}
-            </span>
+          <div className="pt-1.5 mt-0.5 border-t border-white/5 space-y-1">
+            {buttons.buttons.map((b, i) => {
+              // Only quick-reply buttons send a message back, so only those can
+              // carry the flow forward — others are shown dimmed.
+              const act = b.type === 'QUICK_REPLY';
+              return (
+                <div key={i} className={`flex items-center gap-1.5 bg-white/[0.04] rounded-md px-1.5 py-1 ${act ? '' : 'opacity-45'}`}>
+                  <span className={`${act ? 'text-[#25D366]/70' : 'text-white/30'} shrink-0`}>{BUTTON_ICON[b.type] ?? <CornerUpLeft size={10} />}</span>
+                  <span className="text-white/65 text-[10px] truncate flex-1">{b.text}</span>
+                  <span className="text-white/25 text-[8px] uppercase tracking-wider shrink-0">
+                    {act ? 'reply' : b.type === 'PHONE_NUMBER' ? 'call · no branch' : `${b.type.toLowerCase()} · no branch`}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

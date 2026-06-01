@@ -9,6 +9,7 @@ import { eq, and, sql, desc } from 'drizzle-orm';
 import { verifyWebhook, sendTextMessage, sendMediaMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
 import { getSendUrl } from '@/lib/inventory-media';
+import { advanceRunOnButton } from '@/lib/flow-store';
 
 export const maxDuration = 60;
 
@@ -325,6 +326,24 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     .where(eq(conversations.id, conversationId))
     .limit(1)
     .then(r => r[0]));
+
+  // ── Live-flow automation ──────────────────────────────────────────────────
+  // A quick-reply button tap advances the customer's active flow run (if any),
+  // sending the next template. Typed messages are left to the AI agent below.
+  const isButtonTap = msg.type === 'button' || msg.type === 'interactive';
+  if (isButtonTap) {
+    const buttonText   = templateData?.buttonTitle || msgText || '';
+    const contextMsgId = templateData?.contextMsgId || msg.context?.id || undefined;
+    if (buttonText) {
+      await advanceRunOnButton({
+        phone: fromPhone,
+        contextMsgId,
+        buttonText,
+        conversationId,
+        bizPhone: phoneNumberId,
+      }).catch(err => console.error('[flow-advance]', err));
+    }
+  }
 
   // Only reply to messages the customer typed themselves (type "text").
   // Button taps on templates / utility messages arrive as "button" or

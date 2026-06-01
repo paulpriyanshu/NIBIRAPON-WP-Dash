@@ -383,11 +383,13 @@ function StepTemplate({
   loading,
   selected,
   onSelect,
+  lockedMap,
 }: {
   templates: Template[];
   loading: boolean;
   selected: Template | null;
   onSelect: (t: Template) => void;
+  lockedMap: Record<string, string>;
 }) {
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('ALL');
@@ -444,13 +446,22 @@ function StepTemplate({
         {filtered.map((t) => {
           const body = t.components.find((c) => c.type === 'BODY')?.text || '';
           const isSelected = selected?.id === t.id;
+          const lockedFlow = lockedMap[t.name];
           return (
             <div
               key={t.id}
-              onClick={() => onSelect(t)}
-              className={`flex items-start gap-3 p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34] transition-colors ${
-                isSelected ? 'bg-[#e8f5e9] dark:bg-[#1a3a2a] border-l-2 border-wp-green' : ''
-              }`}
+              onClick={() => {
+                if (lockedFlow) {
+                  alert(`"${t.name.replace(/_/g, ' ')}" is used in the live flow "${lockedFlow}" and can't be broadcast independently.\n\nSend it from the Flow page (Active Flows → Broadcast root template), or pause that flow first.`);
+                  return;
+                }
+                onSelect(t);
+              }}
+              className={`flex items-start gap-3 p-4 transition-colors ${
+                lockedFlow
+                  ? 'opacity-60 cursor-not-allowed'
+                  : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34]'
+              } ${isSelected ? 'bg-[#e8f5e9] dark:bg-[#1a3a2a] border-l-2 border-wp-green' : ''}`}
             >
               <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
                 isSelected ? 'bg-wp-green' : 'bg-gray-100 dark:bg-[#2a3942]'
@@ -461,6 +472,11 @@ function StepTemplate({
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="font-semibold text-sm text-[#111b21] dark:text-[#e9edef]">{t.name.replace(/_/g, ' ')}</span>
                   {isSelected && <CheckCircle2 size={14} className="text-wp-green" />}
+                  {lockedFlow && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 flex items-center gap-0.5">
+                      🔒 In flow
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 dark:text-[#8696a0] line-clamp-2">{body}</p>
                 <div className="flex gap-1.5 mt-1.5">
@@ -468,6 +484,7 @@ function StepTemplate({
                     {t.category.toLowerCase()}
                   </span>
                   <span className="text-[10px] text-gray-400 dark:text-[#667781]">{t.language.toUpperCase()}</span>
+                  {lockedFlow && <span className="text-[10px] text-amber-600/70 dark:text-amber-400/70">used in “{lockedFlow}”</span>}
                 </div>
               </div>
             </div>
@@ -1396,12 +1413,22 @@ export default function BroadcastPage() {
   const [error, setError] = useState('');
   const [templateStats, setTemplateStats] = useState<TemplateStats | null>(null);
   const [templateStatsLoading, setTemplateStatsLoading] = useState(false);
+  // templateName → live flow name, for templates locked from independent broadcast
+  const [lockedMap, setLockedMap] = useState<Record<string, string>>({});
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     dispatch(fetchTemplates());
   }, [dispatch]);
+
+  useEffect(() => {
+    fetch('/api/flows/locked-templates')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: { templateName: string; flowName: string }[]) =>
+        setLockedMap(Object.fromEntries(list.map((l) => [l.templateName, l.flowName]))))
+      .catch(() => {});
+  }, []);
 
   // Fetch per-template broadcast stats whenever the selected template changes
   useEffect(() => {
@@ -1836,7 +1863,7 @@ export default function BroadcastPage() {
                         <p className="text-xs text-gray-400 dark:text-[#667781]">Only approved templates can be used for broadcast</p>
                       </div>
                       <div className="flex-1 overflow-hidden">
-                        <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} onSelect={(t) => {
+                        <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} lockedMap={lockedMap} onSelect={(t) => {
                           if (t.id !== selectedTemplate?.id) {
                             setParams({});
                             setHeaderMediaUrl('');

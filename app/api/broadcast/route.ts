@@ -7,6 +7,7 @@ import {
 import { eq, desc, sql, and, inArray, gt, ne } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, MPMSection } from '@/lib/whatsapp-api';
 import { normalizePhone } from '@/lib/utils';
+import { isTemplateLocked } from '@/lib/flow-store';
 
 export const maxDuration = 300;
 
@@ -141,6 +142,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: 'templateName and at least one recipient are required' },
       { status: 400 }
+    );
+  }
+
+  // Templates used by a live flow can't be broadcast independently — they must
+  // be sent through the flow (which creates the runs that drive the automation).
+  const lock = await isTemplateLocked(templateName).catch(() => null);
+  if (lock) {
+    return NextResponse.json(
+      { error: `"${templateName}" is used in the live flow "${lock.flowName}" and can't be broadcast independently. Send it from the Flow page.` },
+      { status: 409 },
     );
   }
 

@@ -79,7 +79,7 @@ const TOOLBAR_NODES = [
   {
     type: 'binaryDecisionNode',
     label: 'Yes / No',
-    hint: 'Two-branch decision node',
+    hint: 'Two-branch decision — auto-routes by the buttons of the template feeding it',
     icon: GitBranch,
     palette: { bg: 'bg-amber-500/10', border: 'border-amber-500/25', hover: 'hover:bg-amber-500/20 hover:border-amber-500/50', text: 'text-amber-300' },
   },
