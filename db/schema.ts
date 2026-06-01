@@ -374,7 +374,20 @@ export const agentSettings = pgTable('agent_settings', {
   updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// ─── Agent: product catalog ───────────────────────────────────────────────────
+// ─── Inventory: products ───────────────────────────────────────────────────────
+// Global product inventory. The agent only uses rows where inAgentContext = true.
+// (Table name kept as `catalog_products` to avoid a destructive rename migration.)
+
+// A single product photo/video. Either a public `url` or an uploaded file we
+// store ourselves (`assetId` → media_assets row) identifies the asset.
+// `description` is the per-image caption the agent uses to explain that photo.
+export interface ProductMedia {
+  type:        'image' | 'video';
+  url?:        string;
+  assetId?:    string;
+  mimeType?:   string;
+  description?: string;
+}
 
 export const catalogProducts = pgTable('catalog_products', {
   id:          uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -384,12 +397,16 @@ export const catalogProducts = pgTable('catalog_products', {
   category:    varchar('category', { length: 100 }),
   fabric:      varchar('fabric', { length: 100 }),
   occasions:   text('occasions'),
-  imageUrl:    text('image_url'),
-  // Retailer / WhatsApp catalog product ID — used to detect duplicates
+  imageUrl:    text('image_url'),  // legacy single image — superseded by `media`
+  // Photos/videos the agent can send, each with its own description
+  media:       jsonb('media').$type<ProductMedia[]>().notNull().default(sql`'[]'::jsonb`),
+  // Retailer / WhatsApp catalog product ID — legacy, unused
   retailerId:  varchar('retailer_id', { length: 255 }),
   // Extra notes the admin writes so the agent can explain the product better
   customInfo:  text('custom_info'),
   isActive:    boolean('is_active').notNull().default(true),
+  // Whether this product is exposed to the AI agent's context
+  inAgentContext: boolean('in_agent_context').notNull().default(false),
   // Embedding stored as JSON number array (cosine similarity computed in app)
   embedding:   jsonb('embedding').$type<number[]>(),
   syncedAt:    timestamp('synced_at', { withTimezone: true }),
@@ -399,6 +416,7 @@ export const catalogProducts = pgTable('catalog_products', {
   index('catalog_products_active_idx').on(t.isActive),
   index('catalog_products_category_idx').on(t.category),
   index('catalog_products_retailer_idx').on(t.retailerId),
+  index('catalog_products_in_agent_idx').on(t.inAgentContext),
 ]);
 
 // ─── Agent: draft messages ────────────────────────────────────────────────────
@@ -414,3 +432,6 @@ export const agentDrafts = pgTable('agent_drafts', {
 }, (t) => [
   index('agent_drafts_active_idx').on(t.isActive),
 ]);
+
+// Uploaded product photos/videos are stored in Cloudflare R2 (see lib/r2.ts).
+// The R2 object key is kept on each product's `media[].assetId` — no DB table needed.

@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/db';
-import { catalogProducts } from '@/db/schema';
-import { isNull, or, eq } from 'drizzle-orm';
+import { catalogProducts, type ProductMedia } from '@/db/schema';
+import { and, isNull, eq } from 'drizzle-orm';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
 
 /** Build a plain text representation of a product for embedding. */
 function productToText(p: typeof catalogProducts.$inferSelect): string {
+  const mediaDescs = ((p.media ?? []) as ProductMedia[])
+    .map(m => m.description)
+    .filter(Boolean);
   const parts = [
     p.name,
     p.category   && `Category: ${p.category}`,
@@ -16,17 +19,23 @@ function productToText(p: typeof catalogProducts.$inferSelect): string {
     p.priceRange && `Price: ${p.priceRange}`,
     p.description,
     p.customInfo && `Additional info: ${p.customInfo}`,
+    mediaDescs.length && `Photos: ${mediaDescs.join('; ')}`,
   ].filter(Boolean);
   return parts.join('. ');
 }
 
 export async function POST() {
   try {
-    // Fetch all active products that don't have an embedding yet
+    // Embed the agent-context products that don't have a current embedding.
+    // PATCH clears `embedding` on edit, so this re-embeds changed products too.
     const unsynced = await db
       .select()
       .from(catalogProducts)
-      .where(or(isNull(catalogProducts.embedding), eq(catalogProducts.isActive, true)));
+      .where(and(
+        eq(catalogProducts.inAgentContext, true),
+        eq(catalogProducts.isActive, true),
+        isNull(catalogProducts.embedding),
+      ));
 
     if (unsynced.length === 0) {
       return NextResponse.json({ synced: 0, message: 'All products already synced' });

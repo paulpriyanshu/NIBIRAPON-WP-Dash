@@ -6,8 +6,9 @@ import {
   broadcastRecipients, broadcastCampaigns,
 } from '@/db/schema';
 import { eq, and, sql, asc } from 'drizzle-orm';
-import { verifyWebhook, sendTextMessage } from '@/lib/whatsapp-api';
+import { verifyWebhook, sendTextMessage, sendMediaMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
+import { getSendUrl } from '@/lib/inventory-media';
 
 export const maxDuration = 60;
 
@@ -363,35 +364,79 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, shouldRespond } = await runAgent(userText, chatHistory);
-  console.log(`[agent] shouldRespond=${shouldRespond} reply="${reply?.slice(0, 60)}…"`);
+  const { reply, media, shouldRespond } = await runAgent(userText, chatHistory);
+  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} reply="${reply?.slice(0, 60)}…"`);
 
-  if (!shouldRespond || !reply) return;
+  if (!shouldRespond) return;
 
-  // Send via WhatsApp
-  const waRes = await sendTextMessage({ to: toPhone, text: reply });
-  const waId = waRes?.messages?.[0]?.id;
-  console.log(`[agent] ✓ WhatsApp send waId=${waId ?? 'local'}`);
+  const localId = (suffix: string) =>
+    `wamid.agent_${Date.now()}_${suffix}_${Math.random().toString(36).slice(2, 6)}`;
 
-  const msgId = waId || `wamid.agent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const now = new Date();
+  // ── 1. Text reply ─────────────────────────────────────────────────────────
+  if (reply) {
+    const waRes = await sendTextMessage({ to: toPhone, text: reply });
+    const waId = waRes?.messages?.[0]?.id;
+    console.log(`[agent] ✓ text send waId=${waId ?? 'local'}`);
 
-  // Persist with sentBy='agent'
-  await db.insert(messages).values({
-    id:            msgId,
-    conversationId,
-    fromNumber:    bizPhone,
-    toNumber:      toPhone,
-    type:          'text',
-    text:          reply,
-    status:        waId ? 'sent' : 'failed',
-    isOutgoing:    true,
-    sentBy:        'agent',
-    sentAt:        now,
-  }).onConflictDoNothing();
+    await db.insert(messages).values({
+      id:            waId || localId('txt'),
+      conversationId,
+      fromNumber:    bizPhone,
+      toNumber:      toPhone,
+      type:          'text',
+      text:          reply,
+      status:        waId ? 'sent' : 'failed',
+      isOutgoing:    true,
+      sentBy:        'agent',
+      sentAt:        new Date(),
+    }).onConflictDoNothing();
+  }
+
+  // ── 2. Product photos / videos ────────────────────────────────────────────
+  // Bytes for uploaded assets live in our DB; we hand WhatsApp a transient copy
+  // (cached) only to deliver the message. Pasted URLs are sent as a link.
+  for (const m of media) {
+    try {
+      // Stored assets live in R2; hand WhatsApp a fetchable URL (public or
+      // presigned). Pasted URLs are sent as-is.
+      const sendUrl = m.assetId ? await getSendUrl(m.assetId) : m.url;
+      if (!sendUrl) {
+        console.error(`[agent] no sendable URL for media`, m);
+        continue;
+      }
+
+      const waRes = await sendMediaMessage({
+        to:       toPhone,
+        type:     m.type,
+        mediaUrl: sendUrl,
+        caption:  m.caption,
+      });
+      const waId = waRes?.messages?.[0]?.id;
+      console.log(`[agent] ✓ ${m.type} send waId=${waId ?? 'local'}`);
+
+      // Persist a URL the inbox can render: our permanent proxy, or the link.
+      const displayUrl = m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? null);
+
+      await db.insert(messages).values({
+        id:            waId || localId(m.type),
+        conversationId,
+        fromNumber:    bizPhone,
+        toNumber:      toPhone,
+        type:          m.type,
+        mediaUrl:      displayUrl,
+        mediaCaption:  m.caption ?? null,
+        status:        waId ? 'sent' : 'failed',
+        isOutgoing:    true,
+        sentBy:        'agent',
+        sentAt:        new Date(),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.error(`[agent] media send failed (${m.type}):`, err instanceof Error ? err.message : err);
+    }
+  }
 
   await db.update(conversations)
-    .set({ updatedAt: now })
+    .set({ updatedAt: new Date() })
     .where(eq(conversations.id, conversationId));
 }
 
