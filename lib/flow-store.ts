@@ -156,9 +156,10 @@ export async function startRun(opts: {
   });
 
   const runs = await runsColl();
-  // Restart: stop any existing active run for this phone in this flow.
+  // One active flow per contact — stop ALL prior active runs for this phone
+  // (across flows) so a stale run can't intercept the next button tap.
   await runs.updateMany(
-    { phone: opts.phone, flowId: opts.flow._id, status: 'active' },
+    { phone: opts.phone, status: 'active' },
     { $set: { status: 'stopped', updatedAt: new Date() } },
   );
   const now = new Date();
@@ -191,63 +192,72 @@ export async function advanceRunOnButton(opts: {
   bizPhone: string;
 }): Promise<boolean> {
   const runs = await runsColl();
-  const run = await runs.findOne({ phone: opts.phone, status: 'active' });
-  if (!run) {
+  const flows = await flowsColl();
+
+  // A contact may have more than one active run (re-launches / multiple flows).
+  // Prefer the run whose current template matches the tapped message, and only
+  // act on runs whose flow is live and can advance on this button.
+  const active = await runs.find({ phone: opts.phone, status: 'active' }).sort({ startedAt: -1 }).toArray();
+  if (active.length === 0) {
     console.log(`[flow] no active run for phone=${opts.phone}`);
     return false;
   }
+  const ordered = opts.contextMsgId
+    ? [
+        ...active.filter(r => r.lastTemplateMsgId === opts.contextMsgId),
+        ...active.filter(r => r.lastTemplateMsgId !== opts.contextMsgId),
+      ]
+    : active;
 
-  // Stale tap (customer scrolled up and tapped an old template) — log but don't
-  // hard-block; some WhatsApp payloads omit/alter context.id.
-  if (opts.contextMsgId && run.lastTemplateMsgId && opts.contextMsgId !== run.lastTemplateMsgId) {
-    console.warn(`[flow] context mismatch (got ${opts.contextMsgId}, expected ${run.lastTemplateMsgId}) — advancing anyway`);
-  }
+  for (const run of ordered) {
+    let flow;
+    try { flow = await flows.findOne({ _id: new ObjectId(run.flowId) }); } catch { continue; }
+    if (!flow || flow.status !== 'live') {
+      console.log(`[flow] skip run ${run._id} — flow ${run.flowId} status=${flow?.status}`);
+      continue;
+    }
 
-  const flows = await flowsColl();
-  let flow;
-  try { flow = await flows.findOne({ _id: new ObjectId(run.flowId) }); } catch { return false; }
-  if (!flow || flow.status !== 'live') {
-    console.log(`[flow] flow ${run.flowId} not live (status=${flow?.status})`);
-    return false;
-  }
+    const compiled = compileFlow(flow as unknown as Flow);
+    const nextId = resolveNext(compiled, run.currentNodeId, opts.buttonText);
+    console.log(`[flow] try run node=${run.currentNodeId} button="${opts.buttonText}" → next=${nextId ?? 'none'} (buttons: ${JSON.stringify(compiled.transitions[run.currentNodeId]?.buttons ?? {})})`);
+    if (!nextId) continue;
 
-  const compiled = compileFlow(flow as unknown as Flow);
-  const nextId = resolveNext(compiled, run.currentNodeId, opts.buttonText);
-  console.log(`[flow] advance phone=${opts.phone} node=${run.currentNodeId} button="${opts.buttonText}" → next=${nextId ?? 'none'} (buttons: ${JSON.stringify(compiled.transitions[run.currentNodeId]?.buttons ?? {})})`);
-  if (!nextId) return false;
+    const nextNode = compiled.nodesById[nextId];
+    const info = templateSendInfo(nextNode);
+    if (!info) continue;
 
-  const nextNode = compiled.nodesById[nextId];
-  const info = templateSendInfo(nextNode);
-  if (!info) return false;
+    let waId: string | undefined;
+    try {
+      waId = await sendNodeTemplate(flow as unknown as Flow, nextId, opts.phone);
+      console.log(`[flow] sent next template "${info.name}" → waId=${waId ?? 'none'}`);
+    } catch (e) {
+      console.error(`[flow] advance send failed for template "${info.name}":`, e instanceof Error ? e.message : e);
+      return false;
+    }
 
-  let waId: string | undefined;
-  try {
-    waId = await sendNodeTemplate(flow as unknown as Flow, nextId, opts.phone);
-    console.log(`[flow] sent next template "${info.name}" → waId=${waId ?? 'none'}`);
-  } catch (e) {
-    console.error(`[flow] advance send failed for template "${info.name}":`, e instanceof Error ? e.message : e);
-    return false;
-  }
+    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await persistFlowMessage({
+      msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone,
+      phone: opts.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+    });
 
-  const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  await persistFlowMessage({
-    msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone,
-    phone: opts.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
-  });
-
-  const terminal = !hasOnward(compiled, nextId);
-  await runs.updateOne(
-    { _id: run._id },
-    {
-      $set: {
-        currentNodeId:     nextId,
-        currentButtons:    quickReplyButtons(nextNode),
-        lastTemplateMsgId: msgId,
-        status:            terminal ? 'completed' : 'active',
-        updatedAt:         new Date(),
+    const terminal = !hasOnward(compiled, nextId);
+    await runs.updateOne(
+      { _id: run._id },
+      {
+        $set: {
+          currentNodeId:     nextId,
+          currentButtons:    quickReplyButtons(nextNode),
+          lastTemplateMsgId: msgId,
+          status:            terminal ? 'completed' : 'active',
+          updatedAt:         new Date(),
+        },
+        $push: { steps: { at: new Date(), button: opts.buttonText, toNode: nextId } },
       },
-      $push: { steps: { at: new Date(), button: opts.buttonText, toNode: nextId } },
-    },
-  );
-  return true;
+    );
+    return true;
+  }
+
+  console.log(`[flow] no live run could advance for phone=${opts.phone} button="${opts.buttonText}"`);
+  return false;
 }
