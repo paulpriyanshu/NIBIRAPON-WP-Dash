@@ -7,18 +7,20 @@ export async function GET() {
   try {
     const rows = await db
       .select({
-        id: catalogProducts.id,
-        name: catalogProducts.name,
+        id:          catalogProducts.id,
+        name:        catalogProducts.name,
         description: catalogProducts.description,
-        priceRange: catalogProducts.priceRange,
-        category: catalogProducts.category,
-        fabric: catalogProducts.fabric,
-        occasions: catalogProducts.occasions,
-        imageUrl: catalogProducts.imageUrl,
-        isActive: catalogProducts.isActive,
-        syncedAt: catalogProducts.syncedAt,
-        createdAt: catalogProducts.createdAt,
-        // Don't return the embedding array — it's large and not needed by the UI
+        priceRange:  catalogProducts.priceRange,
+        category:    catalogProducts.category,
+        fabric:      catalogProducts.fabric,
+        occasions:   catalogProducts.occasions,
+        imageUrl:    catalogProducts.imageUrl,
+        retailerId:  catalogProducts.retailerId,
+        customInfo:  catalogProducts.customInfo,
+        isActive:    catalogProducts.isActive,
+        syncedAt:    catalogProducts.syncedAt,
+        createdAt:   catalogProducts.createdAt,
+        // Exclude the large embedding array — not needed by the UI
       })
       .from(catalogProducts)
       .orderBy(desc(catalogProducts.createdAt));
@@ -32,7 +34,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, description, priceRange, category, fabric, occasions, imageUrl } = body;
+    const { name, description, priceRange, category, fabric, occasions, imageUrl, retailerId, customInfo } = body;
 
     if (!name?.trim()) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
@@ -48,6 +50,8 @@ export async function POST(req: NextRequest) {
         fabric:      fabric      || null,
         occasions:   occasions   || null,
         imageUrl:    imageUrl    || null,
+        retailerId:  retailerId  || null,
+        customInfo:  customInfo  || null,
       })
       .returning({ id: catalogProducts.id });
 

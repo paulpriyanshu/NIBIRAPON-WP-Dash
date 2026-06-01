@@ -64,6 +64,7 @@ async function searchCatalog(query: string, topN = 4): Promise<string> {
       p.fabric      && `| Fabric: ${p.fabric}`,
       p.occasions   && `| For: ${p.occasions}`,
       p.description && `\n  ${p.description}`,
+      p.customInfo  && `\n  📌 Extra info: ${p.customInfo}`,
     ].filter(Boolean);
     return parts.join(' ');
   });

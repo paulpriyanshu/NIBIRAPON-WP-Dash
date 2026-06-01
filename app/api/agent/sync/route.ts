@@ -15,6 +15,7 @@ function productToText(p: typeof catalogProducts.$inferSelect): string {
     p.occasions  && `Occasions: ${p.occasions}`,
     p.priceRange && `Price: ${p.priceRange}`,
     p.description,
+    p.customInfo && `Additional info: ${p.customInfo}`,
   ].filter(Boolean);
   return parts.join('. ');
 }

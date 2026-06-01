@@ -10,7 +10,7 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await req.json();
-    const { name, description, priceRange, category, fabric, occasions, imageUrl, isActive } = body;
+    const { name, description, priceRange, category, fabric, occasions, imageUrl, isActive, customInfo } = body;
 
     await db
       .update(catalogProducts)
@@ -23,7 +23,8 @@ export async function PATCH(
         ...(occasions   !== undefined && { occasions }),
         ...(imageUrl    !== undefined && { imageUrl }),
         ...(isActive    !== undefined && { isActive }),
-        // Clear embedding so it gets re-synced
+        ...(customInfo  !== undefined && { customInfo }),
+        // Clear embedding so it gets re-synced with updated info
         embedding: null,
         syncedAt:  null,
         updatedAt: new Date(),

@@ -385,6 +385,10 @@ export const catalogProducts = pgTable('catalog_products', {
   fabric:      varchar('fabric', { length: 100 }),
   occasions:   text('occasions'),
   imageUrl:    text('image_url'),
+  // Retailer / WhatsApp catalog product ID — used to detect duplicates
+  retailerId:  varchar('retailer_id', { length: 255 }),
+  // Extra notes the admin writes so the agent can explain the product better
+  customInfo:  text('custom_info'),
   isActive:    boolean('is_active').notNull().default(true),
   // Embedding stored as JSON number array (cosine similarity computed in app)
   embedding:   jsonb('embedding').$type<number[]>(),
@@ -394,6 +398,7 @@ export const catalogProducts = pgTable('catalog_products', {
 }, (t) => [
   index('catalog_products_active_idx').on(t.isActive),
   index('catalog_products_category_idx').on(t.category),
+  index('catalog_products_retailer_idx').on(t.retailerId),
 ]);
 
 // ─── Agent: draft messages ────────────────────────────────────────────────────
