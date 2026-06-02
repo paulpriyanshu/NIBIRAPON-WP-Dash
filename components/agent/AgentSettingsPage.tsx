@@ -98,7 +98,7 @@ function GeneralTab() {
   };
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-2xl mx-auto">
       <div className="bg-[#1f2c34] border border-white/10 rounded-xl p-5">
         <h3 className="text-white font-semibold text-sm mb-1">Agent Identity</h3>
         <p className="text-white/40 text-xs mb-4">The name Riya uses when introducing herself to customers.</p>
@@ -456,8 +456,15 @@ function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Template *</label>
         <select value={templateName} onChange={e => onPick(e.target.value)} className={draftInput}>
           <option value="">Select a template…</option>
-          {templates.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+          {templates.map(t => (
+            <option key={t.id} value={t.name} disabled={t.status !== 'APPROVED'}>
+              {t.name}{t.status !== 'APPROVED' ? ` (${t.status.toLowerCase()})` : ''}
+            </option>
+          ))}
         </select>
+        {selected && selected.status !== 'APPROVED' && (
+          <p className="text-amber-400/70 text-[10px] mt-1">This template isn't approved yet — WhatsApp may reject it when the agent sends.</p>
+        )}
       </div>
 
       {spec && (
@@ -517,7 +524,8 @@ function DraftsTab() {
     if (dRes.ok) setDrafts(await dRes.json());
     if (tRes.ok) {
       const t: Template[] = await tRes.json();
-      setTemplates(t.filter(x => x.status === 'APPROVED'));
+      // Show all templates, approved first (only approved can actually be sent).
+      setTemplates([...t].sort((a, b) => (a.status === 'APPROVED' ? -1 : 1) - (b.status === 'APPROVED' ? -1 : 1)));
     }
     setLoading(false);
   }, []);
@@ -541,7 +549,7 @@ function DraftsTab() {
   };
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4 max-w-3xl mx-auto">
       <div className="flex items-center justify-between">
         <p className="text-white/40 text-xs">{drafts.length} draft{drafts.length !== 1 ? 's' : ''}</p>
         <div className="flex items-center gap-2">
