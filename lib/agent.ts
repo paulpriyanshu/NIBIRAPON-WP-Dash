@@ -9,7 +9,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
 
 export interface AgentMessage { role: 'user' | 'assistant'; content: string; }
 export interface AgentMediaOut { type: 'image' | 'video'; url?: string; assetId?: string; caption?: string; }
-export interface AgentResult  { reply: string; media: AgentMediaOut[]; shouldRespond: boolean; }
+export interface AgentListOut {
+  body: string; button: string; header?: string;
+  sections: { title?: string; rows: { id: string; title: string; description?: string }[] }[];
+}
+export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; shouldRespond: boolean; }
 
 type ProductRow = typeof catalogProducts.$inferSelect;
 
@@ -85,17 +89,23 @@ async function getContextData(userMessage: string): Promise<{
   settingsPrompt: string;
   agentName: string;
   products: ProductRow[];
+  categories: string[];
   catalogContext: string;
   draftsContext: string;
 }> {
-  const [settingsRow, drafts, products] = await Promise.all([
+  const [settingsRow, drafts, products, allInContext] = await Promise.all([
     db.select().from(agentSettings).limit(1).then(r => r[0]),
     db.select().from(agentDrafts).where(eq(agentDrafts.isActive, true)),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
+    db.select({ category: catalogProducts.category })
+      .from(catalogProducts)
+      .where(and(eq(catalogProducts.inAgentContext, true), eq(catalogProducts.isActive, true)))
+      .catch(() => [] as { category: string | null }[]),
   ]);
 
   const agentName      = settingsRow?.agentName    ?? 'Riya';
   const settingsPrompt = settingsRow?.systemPrompt ?? '';
+  const categories     = [...new Set(allInContext.map(p => p.category).filter((c): c is string => !!c))];
 
   let draftsContext = '';
   if (drafts.length > 0) {
@@ -109,6 +119,7 @@ async function getContextData(userMessage: string): Promise<{
     settingsPrompt,
     agentName,
     products,
+    categories,
     catalogContext: formatCatalogContext(products),
     draftsContext,
   };
@@ -116,7 +127,7 @@ async function getContextData(userMessage: string): Promise<{
 
 // ── Base system prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, extra: string): string {
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, extra: string, categories: string[]): string {
   return `
 You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion.
 
@@ -141,6 +152,10 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 - ALWAYS write a short text reply in your message content.
 - When the customer is interested in, asks about, or would benefit from seeing specific product(s) listed in the catalog below, ALSO call the \`send_product_media\` tool with those products' ids. Their photos/videos will be sent to the customer automatically.
 - Only use ids that appear in the catalog section. Never invent ids. If no product is relevant, just reply with text and don't call the tool.
+
+## Sending a category list
+- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. A tappable WhatsApp list of our categories is sent so they can pick one. When they pick a category, show that category's products.
+- Available categories: ${categories.length ? categories.join(', ') : '(none configured)'}.
 
 ${catalogCtx ? catalogCtx + '\n' : ''}
 ${draftsCtx  ? draftsCtx  + '\n' : ''}
@@ -200,6 +215,26 @@ const SEND_MEDIA_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
+const SEND_LIST_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'send_category_list',
+    description: "Send the customer a tappable WhatsApp list of product categories so they can pick one. Use when they want to browse or aren't sure what they want.",
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+};
+
+/** Build a WhatsApp list from the inventory categories. */
+function buildCategoryList(categories: string[]): AgentListOut | undefined {
+  const rows = categories.slice(0, 10).map(c => ({ id: `category:${c}`, title: c.slice(0, 24) }));
+  if (rows.length === 0) return undefined;
+  return {
+    body: 'Which category would you like to explore? Tap one below 👇',
+    button: 'View categories',
+    sections: [{ title: 'Our collections', rows }],
+  };
+}
+
 // ── Main entry point ─────────────────────────────────────────────────────────
 
 export async function runAgent(
@@ -208,10 +243,10 @@ export async function runAgent(
 ): Promise<AgentResult> {
   if (!isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
 
-  const { settingsPrompt, agentName, products, catalogContext, draftsContext } =
+  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext } =
     await getContextData(userMessage);
 
-  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, settingsPrompt);
+  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, settingsPrompt, categories);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -225,25 +260,29 @@ export async function runAgent(
       messages,
       max_tokens:  400,
       temperature: 0.85,
-      tools:       [SEND_MEDIA_TOOL],
+      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL],
       tool_choice: 'auto',
     });
 
     const choice = response.choices[0]?.message;
     const reply  = choice?.content?.trim() ?? '';
 
-    // Gather any product ids the model asked to show.
+    // Gather product ids and whether a category list was requested.
     const ids: string[] = [];
+    let wantsList = false;
     for (const tc of choice?.tool_calls ?? []) {
-      if (tc.type !== 'function' || tc.function.name !== 'send_product_media') continue;
+      if (tc.type !== 'function') continue;
+      if (tc.function.name === 'send_category_list') { wantsList = true; continue; }
+      if (tc.function.name !== 'send_product_media') continue;
       try {
         const args = JSON.parse(tc.function.arguments || '{}');
         if (Array.isArray(args.product_ids)) ids.push(...args.product_ids.map(String));
       } catch { /* ignore malformed args */ }
     }
     const media = collectMedia(products, ids);
+    const list  = wantsList ? buildCategoryList(categories) : undefined;
 
-    return { reply, media, shouldRespond: reply.length > 0 || media.length > 0 };
+    return { reply, media, list, shouldRespond: reply.length > 0 || media.length > 0 || !!list };
   } catch (err) {
     console.error('[agent] OpenAI error:', err instanceof Error ? err.message : err);
     return { reply: '', media: [], shouldRespond: false };

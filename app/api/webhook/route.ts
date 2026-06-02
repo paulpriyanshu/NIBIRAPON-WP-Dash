@@ -6,7 +6,7 @@ import {
   broadcastRecipients, broadcastCampaigns,
 } from '@/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
-import { verifyWebhook, sendTextMessage, sendMediaMessage } from '@/lib/whatsapp-api';
+import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
 import { getSendUrl } from '@/lib/inventory-media';
 import { advanceRunOnButton } from '@/lib/flow-store';
@@ -330,33 +330,37 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   // ── Live-flow automation ──────────────────────────────────────────────────
   // A quick-reply button tap advances the customer's active flow run (if any),
   // sending the next template. Typed messages are left to the AI agent below.
-  const isButtonTap = msg.type === 'button' || msg.type === 'interactive';
+  const isButtonTap   = msg.type === 'button' || msg.type === 'interactive';
+  const isListPick    = msg.type === 'interactive' && templateData?.interactiveType === 'list_reply';
+  let flowAdvanced = false;
   if (isButtonTap) {
     const buttonText   = templateData?.buttonTitle || msgText || '';
     const contextMsgId = templateData?.contextMsgId || msg.context?.id || undefined;
     console.log(`[flow] button tap from=${fromPhone} type=${msg.type} text="${buttonText}" context=${contextMsgId ?? 'none'}`);
     if (buttonText) {
-      await advanceRunOnButton({
+      flowAdvanced = await advanceRunOnButton({
         phone: fromPhone,
         contextMsgId,
         buttonText,
         conversationId,
         bizPhone: phoneNumberId,
-      }).catch(err => console.error('[flow-advance]', err));
+      }).catch(err => { console.error('[flow-advance]', err); return false; });
     }
   }
 
-  // Only reply to messages the customer typed themselves (type "text").
-  // Button taps on templates / utility messages arrive as "button" or
-  // "interactive" — the agent must NOT respond to those.
-  const isSelfTyped = msg.type === 'text';
+  // The agent handles messages the customer typed (type "text") AND category
+  // picks from a list it sent (list_reply) that no flow consumed. Quick-reply
+  // button taps drive the flow, not the agent.
+  const agentInput = msg.type === 'text'
+    ? msgText
+    : (isListPick && !flowAdvanced ? (templateData?.buttonTitle || msgText) : null);
 
-  if (conv?.agentEnabled && isSelfTyped && msgText) {
+  if (conv?.agentEnabled && agentInput) {
     await agentReply({
       conversationId,
       toPhone: fromPhone,
       bizPhone: phoneNumberId,
-      userText: msgText,
+      userText: agentInput,
     }).catch(err => console.error('[agent-reply]', err));
   }
 }
@@ -392,8 +396,8 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, shouldRespond } = await runAgent(userText, chatHistory);
-  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} reply="${reply?.slice(0, 60)}…"`);
+  const { reply, media, list, shouldRespond } = await runAgent(userText, chatHistory);
+  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;
 
@@ -460,6 +464,32 @@ async function agentReply({
       }).onConflictDoNothing();
     } catch (err) {
       console.error(`[agent] media send failed (${m.type}):`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── 3. Category list (tappable) ───────────────────────────────────────────
+  if (list) {
+    try {
+      const waRes = await sendListMessage({
+        to: toPhone, body: list.body, button: list.button,
+        header: list.header, sections: list.sections,
+      });
+      const waId = waRes?.messages?.[0]?.id;
+      console.log(`[agent] ✓ list send waId=${waId ?? 'local'}`);
+      await db.insert(messages).values({
+        id:            waId || localId('list'),
+        conversationId,
+        fromNumber:    bizPhone,
+        toNumber:      toPhone,
+        type:          'interactive',
+        text:          list.body,
+        status:        waId ? 'sent' : 'failed',
+        isOutgoing:    true,
+        sentBy:        'agent',
+        sentAt:        new Date(),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.error('[agent] list send failed:', err instanceof Error ? err.message : err);
     }
   }
 

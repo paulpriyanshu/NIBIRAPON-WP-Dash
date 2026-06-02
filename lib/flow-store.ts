@@ -5,9 +5,9 @@ import { messages, conversations } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
 import {
-  compileFlow, resolveNext, hasOnward, quickReplyButtons,
+  compileFlow, resolveNext, hasOnward, delayAfter, quickReplyButtons,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
-  type Flow, type FlowButton, type FlowNode,
+  type Flow, type FlowButton, type FlowNode, type CompiledFlow,
 } from '@/lib/flow-engine';
 
 /** Send a template node with its configured params (handles MPM/catalog). Returns the wamid. */
@@ -77,6 +77,15 @@ export interface FlowRun {
   startedAt: Date;
   updatedAt: Date;
   steps: { at: Date; button: string; toNode: string }[];
+  // Scheduled delay auto-advance (template → Delay node → next template)
+  dueAt?: Date | null;
+  dueNodeId?: string | null;
+}
+
+/** Compute the dueAt/dueNodeId fields for a node that was just sent. */
+function delayFields(compiled: CompiledFlow, nodeId: string): { dueAt: Date | null; dueNodeId: string | null } {
+  const d = delayAfter(compiled, nodeId);
+  return d ? { dueAt: new Date(Date.now() + d.seconds * 1000), dueNodeId: d.nextId } : { dueAt: null, dueNodeId: null };
 }
 
 /* ── Template lock (templates used by LIVE flows) ────────────────────────────── */
@@ -163,6 +172,8 @@ export async function startRun(opts: {
     { $set: { status: 'stopped', updatedAt: new Date() } },
   );
   const now = new Date();
+  const compiled = compileFlow(opts.flow);
+  const due = delayFields(compiled, opts.rootNodeId);
   await runs.insertOne({
     flowId:            opts.flow._id,
     rootNodeId:        opts.rootNodeId,
@@ -176,6 +187,8 @@ export async function startRun(opts: {
     startedAt:         now,
     updatedAt:         now,
     steps:             [],
+    dueAt:             due.dueAt,
+    dueNodeId:         due.dueNodeId,
   } satisfies Omit<FlowRun, '_id'>);
   console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(quickReplyButtons(rootNode))}`);
 
@@ -242,6 +255,7 @@ export async function advanceRunOnButton(opts: {
     });
 
     const terminal = !hasOnward(compiled, nextId);
+    const due = delayFields(compiled, nextId);
     await runs.updateOne(
       { _id: run._id },
       {
@@ -251,6 +265,8 @@ export async function advanceRunOnButton(opts: {
           lastTemplateMsgId: msgId,
           status:            terminal ? 'completed' : 'active',
           updatedAt:         new Date(),
+          dueAt:             due.dueAt,
+          dueNodeId:         due.dueNodeId,
         },
         $push: { steps: { at: new Date(), button: opts.buttonText, toNode: nextId } },
       },
@@ -260,4 +276,70 @@ export async function advanceRunOnButton(opts: {
 
   console.log(`[flow] no live run could advance for phone=${opts.phone} button="${opts.buttonText}"`);
   return false;
+}
+
+/* ── Fire scheduled delay steps (called by the cron tick) ────────────────────── */
+
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+
+export async function runDueSteps(now = new Date()): Promise<{ fired: number }> {
+  const runs = await runsColl();
+  const flows = await flowsColl();
+  const due = await runs.find({ status: 'active', dueAt: { $ne: null, $lte: now } }).limit(50).toArray();
+  let fired = 0;
+
+  for (const run of due) {
+    const nodeId = run.dueNodeId;
+    if (!nodeId) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
+
+    let flow;
+    try { flow = await flows.findOne({ _id: new ObjectId(run.flowId) }); } catch { continue; }
+    if (!flow || flow.status !== 'live') {
+      await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } });
+      continue;
+    }
+
+    const compiled = compileFlow(flow as unknown as Flow);
+    const node = compiled.nodesById[nodeId];
+    const info = templateSendInfo(node);
+    if (!info) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
+
+    let waId: string | undefined;
+    try {
+      waId = await sendNodeTemplate(flow as unknown as Flow, nodeId, run.phone);
+      console.log(`[flow] delay fired → sent "${info.name}" to ${run.phone} waId=${waId ?? 'none'}`);
+    } catch (e) {
+      console.error(`[flow] delay send failed for "${info.name}":`, e instanceof Error ? e.message : e);
+      // Clear the schedule so we don't hot-loop on a broken template.
+      await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } });
+      continue;
+    }
+
+    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await persistFlowMessage({
+      msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID,
+      phone: run.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+    });
+
+    const terminal = !hasOnward(compiled, nodeId);
+    const next = delayFields(compiled, nodeId);
+    await runs.updateOne(
+      { _id: run._id },
+      {
+        $set: {
+          currentNodeId:     nodeId,
+          currentButtons:    quickReplyButtons(node),
+          lastTemplateMsgId: msgId,
+          status:            terminal ? 'completed' : 'active',
+          updatedAt:         new Date(),
+          dueAt:             next.dueAt,
+          dueNodeId:         next.dueNodeId,
+        },
+        $push: { steps: { at: new Date(), button: '(delay)', toNode: nodeId } },
+      },
+    );
+    fired++;
+  }
+
+  return { fired };
 }

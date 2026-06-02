@@ -352,6 +352,45 @@ export async function sendInteractiveMessage({ to, bodyText, buttons }: SendInte
   });
 }
 
+export interface ListRow { id: string; title: string; description?: string }
+export interface ListSection { title?: string; rows: ListRow[] }
+export interface SendListPayload {
+  to: string;
+  body: string;
+  button: string;          // the list-opener button label (≤20 chars)
+  sections: ListSection[]; // ≤10 rows total
+  header?: string;
+  footer?: string;
+}
+
+export async function sendListMessage({ to, body, button, sections, header, footer }: SendListPayload) {
+  const interactive: Record<string, any> = {
+    type: 'list',
+    body: { text: body },
+    action: {
+      button: button.slice(0, 20),
+      sections: sections.map((s) => ({
+        ...(s.title ? { title: s.title.slice(0, 24) } : {}),
+        rows: s.rows.slice(0, 10).map((r) => ({
+          id: r.id.slice(0, 200),
+          title: r.title.slice(0, 24),
+          ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+        })),
+      })),
+    },
+  };
+  if (header) interactive.header = { type: 'text', text: header.slice(0, 60) };
+  if (footer) interactive.footer = { text: footer.slice(0, 60) };
+
+  return graphRequest('POST', `${PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive,
+  });
+}
+
 export async function sendFlowMessage({
   to,
   flowId,

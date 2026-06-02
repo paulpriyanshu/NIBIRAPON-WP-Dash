@@ -24,6 +24,7 @@ import TemplateNode        from './TemplateNode';
 import ConditionNode       from './ConditionNode';
 import BinaryDecisionNode  from './BinaryDecisionNode';
 import MultiConditionNode  from './MultiConditionNode';
+import DelayNode           from './DelayNode';
 import DeletableEdge       from './DeletableEdge';
 import {
   Search, Layers, GitBranch, Trash2, Info, GripVertical,
@@ -51,6 +52,7 @@ const nodeTypes = {
   conditionNode:      ConditionNode,
   binaryDecisionNode: BinaryDecisionNode,
   multiConditionNode: MultiConditionNode,
+  delayNode:          DelayNode,
 };
 
 const edgeTypes = { deletableEdge: DeletableEdge };
@@ -90,12 +92,20 @@ const TOOLBAR_NODES = [
     icon: Network,
     palette: { bg: 'bg-purple-500/10', border: 'border-purple-500/25', hover: 'hover:bg-purple-500/20 hover:border-purple-500/50', text: 'text-purple-300' },
   },
+  {
+    type: 'delayNode',
+    label: 'Delay',
+    hint: 'Wait N seconds, then auto-send the next template (no tap needed)',
+    icon: Clock,
+    palette: { bg: 'bg-teal-500/10', border: 'border-teal-500/25', hover: 'hover:bg-teal-500/20 hover:border-teal-500/50', text: 'text-teal-300' },
+  },
 ] as const;
 
 const NODE_DEFAULT_DATA: Record<string, object> = {
   conditionNode:      { condition: '' },
   binaryDecisionNode: { condition: '' },
   multiConditionNode: { branches: [{ id: 'b1', label: 'Branch 1' }, { id: 'b2', label: 'Branch 2' }] },
+  delayNode:          { seconds: 5 },
 };
 
 /* ── adaptive grid (zoom-invariant) ─────────────────────────────── */

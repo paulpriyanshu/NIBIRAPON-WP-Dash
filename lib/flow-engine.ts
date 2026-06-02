@@ -28,8 +28,13 @@ export interface FlowButton { index: number; text: string; }
 
 export interface CompiledFlow {
   nodesById: Record<string, FlowNode>;
-  // transitions[templateNodeId] = { buttons: { [buttonText]: nextTemplateNodeId }, default }
-  transitions: Record<string, { buttons: Record<string, string>; default: string | null }>;
+  // transitions[templateNodeId] = { buttons, default, delay }
+  transitions: Record<string, {
+    buttons: Record<string, string>;
+    default: string | null;
+    // Auto-advance after N seconds (template → Delay node → next template)
+    delay?: { seconds: number; nextId: string };
+  }>;
 }
 
 /* ── Node helpers ────────────────────────────────────────────────────────────── */
@@ -149,13 +154,19 @@ export function compileFlow(flow: Flow): CompiledFlow {
   for (const node of flow.nodes ?? []) {
     if (node.type !== 'templateNode') continue;
     const buttons = quickReplyButtons(node);
-    const entry = { buttons: {} as Record<string, string>, default: null as string | null };
+    const entry: CompiledFlow['transitions'][string] = { buttons: {}, default: null };
 
     for (const oe of edges.filter(e => e.source === node.id)) {
       const target = nodesById[oe.target];
       if (!target) continue;
 
-      if (target.type === 'binaryDecisionNode') {
+      if (target.type === 'delayNode') {
+        // template → Delay → next template: auto-advance after N seconds.
+        const seconds = Math.max(0, Number(target.data?.seconds) || 0);
+        const out = edges.find(e => e.source === target.id);
+        const dest = out ? resolveToTemplate(out.target) : null;
+        if (dest) entry.delay = { seconds, nextId: dest };
+      } else if (target.type === 'binaryDecisionNode') {
         // Button router fed by this template — map each button's btn-i edge.
         for (const b of buttons) {
           const be = edges.find(e => e.source === target.id && e.sourceHandle === `btn-${b.index}`);
@@ -207,5 +218,10 @@ export function resolveNext(c: CompiledFlow, currentNodeId: string, buttonText: 
 export function hasOnward(c: CompiledFlow, nodeId: string): boolean {
   const e = c.transitions[nodeId];
   if (!e) return false;
-  return Object.keys(e.buttons).length > 0 || !!e.default;
+  return Object.keys(e.buttons).length > 0 || !!e.default || !!e.delay;
+}
+
+/** Delay-based auto-advance for a node, if any. */
+export function delayAfter(c: CompiledFlow, nodeId: string): { seconds: number; nextId: string } | null {
+  return c.transitions[nodeId]?.delay ?? null;
 }
