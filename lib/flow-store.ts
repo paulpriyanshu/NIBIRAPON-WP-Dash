@@ -88,6 +88,76 @@ function delayFields(compiled: CompiledFlow, nodeId: string): { dueAt: Date | nu
   return d ? { dueAt: new Date(Date.now() + d.seconds * 1000), dueNodeId: d.nextId } : { dueAt: null, dueNodeId: null };
 }
 
+// Short delays run inline (setTimeout) for precise timing; longer ones are left
+// to the cron tick so we don't block the request for too long.
+const INLINE_DELAY_CAP_SEC = 45;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * After a template was sent, honour its Delay node: wait the configured seconds
+ * then send the next template — chaining further short delays. Aborts if the
+ * customer advances the run (e.g. taps a button) during the wait.
+ */
+async function runDelayChain(args: {
+  flow: Flow; compiled: CompiledFlow; runId: ObjectId; phone: string;
+  conversationId: string | null; bizPhone: string; fromNodeId: string;
+}): Promise<void> {
+  const runs = await runsColl();
+  let current = args.fromNodeId;
+
+  for (let guard = 0; guard < 25; guard++) {
+    const d = delayAfter(args.compiled, current);
+    if (!d) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
+
+    if (d.seconds > INLINE_DELAY_CAP_SEC) {
+      // Too long to hold the request — hand off to the cron tick.
+      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: new Date(Date.now() + d.seconds * 1000), dueNodeId: d.nextId } });
+      return;
+    }
+
+    await sleep(d.seconds * 1000);
+
+    // If the customer moved the run on (tapped a button) while we waited, stop.
+    const fresh = await runs.findOne({ _id: args.runId });
+    if (!fresh || fresh.status !== 'active' || fresh.currentNodeId !== current) return;
+
+    const node = args.compiled.nodesById[d.nextId];
+    const info = templateSendInfo(node);
+    if (!info) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
+
+    let waId: string | undefined;
+    try {
+      waId = await sendNodeTemplate(args.flow, d.nextId, args.phone);
+      console.log(`[flow] delay (${d.seconds}s) fired → sent "${info.name}" to ${args.phone} waId=${waId ?? 'none'}`);
+    } catch (e) {
+      console.error(`[flow] inline delay send failed for "${info.name}":`, e instanceof Error ? e.message : e);
+      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } });
+      return;
+    }
+
+    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await persistFlowMessage({
+      msgId, conversationId: args.conversationId, bizPhone: args.bizPhone,
+      phone: args.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+    });
+
+    const terminal = !hasOnward(args.compiled, d.nextId);
+    await runs.updateOne(
+      { _id: args.runId },
+      {
+        $set: {
+          currentNodeId: d.nextId, currentButtons: quickReplyButtons(node),
+          lastTemplateMsgId: msgId, status: terminal ? 'completed' : 'active',
+          updatedAt: new Date(), dueAt: null, dueNodeId: null,
+        },
+        $push: { steps: { at: new Date(), button: '(delay)', toNode: d.nextId } },
+      },
+    );
+    if (terminal) return;
+    current = d.nextId;
+  }
+}
+
 /* ── Template lock (templates used by LIVE flows) ────────────────────────────── */
 
 export async function getLockedTemplates(): Promise<{ templateName: string; flowId: string; flowName: string }[]> {
@@ -173,8 +243,7 @@ export async function startRun(opts: {
   );
   const now = new Date();
   const compiled = compileFlow(opts.flow);
-  const due = delayFields(compiled, opts.rootNodeId);
-  await runs.insertOne({
+  const ins = await runs.insertOne({
     flowId:            opts.flow._id,
     rootNodeId:        opts.rootNodeId,
     phone:             opts.phone,
@@ -187,10 +256,16 @@ export async function startRun(opts: {
     startedAt:         now,
     updatedAt:         now,
     steps:             [],
-    dueAt:             due.dueAt,
-    dueNodeId:         due.dueNodeId,
+    dueAt:             null,
+    dueNodeId:         null,
   } satisfies Omit<FlowRun, '_id'>);
   console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(quickReplyButtons(rootNode))}`);
+
+  // Honour a Delay node right after the root (setTimeout for short waits).
+  await runDelayChain({
+    flow: opts.flow, compiled, runId: ins.insertedId, phone: opts.phone,
+    conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: opts.rootNodeId,
+  });
 
   return { ok: true };
 }
@@ -255,7 +330,6 @@ export async function advanceRunOnButton(opts: {
     });
 
     const terminal = !hasOnward(compiled, nextId);
-    const due = delayFields(compiled, nextId);
     await runs.updateOne(
       { _id: run._id },
       {
@@ -265,12 +339,20 @@ export async function advanceRunOnButton(opts: {
           lastTemplateMsgId: msgId,
           status:            terminal ? 'completed' : 'active',
           updatedAt:         new Date(),
-          dueAt:             due.dueAt,
-          dueNodeId:         due.dueNodeId,
+          dueAt:             null,
+          dueNodeId:         null,
         },
         $push: { steps: { at: new Date(), button: opts.buttonText, toNode: nextId } },
       },
     );
+
+    // Honour a Delay node after this template (setTimeout for short waits).
+    if (!terminal) {
+      await runDelayChain({
+        flow: flow as unknown as Flow, compiled, runId: run._id, phone: opts.phone,
+        conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: nextId,
+      });
+    }
     return true;
   }
 
