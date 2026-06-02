@@ -7,6 +7,8 @@ import {
   StickyNote, ImageIcon, Film,
 } from 'lucide-react';
 import NextLink from 'next/link';
+import { specFromTemplate } from '@/lib/flow-engine';
+import type { Template } from '@/types';
 
 /* ── types ───────────────────────────────────────────────────────── */
 
@@ -25,9 +27,17 @@ interface Product {
   isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
 }
 
+interface DraftTemplateConfig {
+  bodyParams?: string[]; headerParam?: string; headerMediaUrl?: string;
+  thumbnailProductRetailerId?: string; mpmSections?: { title: string; productIds: string }[];
+  isMPM?: boolean; isCatalog?: boolean;
+}
+
 interface Draft {
-  id: string; name: string; content: string;
+  id: string; name: string; kind?: 'text' | 'template'; content: string;
   triggerHint: string | null; isActive: boolean;
+  templateName?: string | null; language?: string | null;
+  templateConfig?: DraftTemplateConfig | null;
 }
 
 /** Browser-renderable source for a media item. */
@@ -378,34 +388,152 @@ function DraftForm({
   );
 }
 
+/* ── Template draft form ─────────────────────────────────────────── */
+
+const draftInput = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-purple-400/50 transition-colors';
+
+interface TemplateDraftData {
+  name: string; triggerHint: string; templateName: string; language: string;
+  templateConfig: DraftTemplateConfig;
+}
+
+function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
+  templates: Template[];
+  initial?: Partial<TemplateDraftData>;
+  onSave: (d: TemplateDraftData) => Promise<void>;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const [name, setName]               = useState(initial?.name ?? '');
+  const [triggerHint, setTriggerHint] = useState(initial?.triggerHint ?? '');
+  const [templateName, setTemplateName] = useState(initial?.templateName ?? '');
+  const [cfg, setCfg] = useState<DraftTemplateConfig>(initial?.templateConfig ?? {});
+  const [err, setErr] = useState('');
+
+  const selected = templates.find(t => t.name === templateName);
+  const spec = selected ? specFromTemplate(selected) : null;
+
+  const onPick = (tn: string) => {
+    setTemplateName(tn);
+    const t = templates.find(x => x.name === tn);
+    const s = t ? specFromTemplate(t) : null;
+    setCfg({
+      bodyParams: Array.from({ length: s?.bodyParams ?? 0 }, () => ''),
+      headerParam: '', headerMediaUrl: '', thumbnailProductRetailerId: '',
+      mpmSections: s?.isMPM ? [{ title: '', productIds: '' }] : undefined,
+    });
+  };
+
+  const save = async () => {
+    if (!name.trim()) { setErr('Name is required'); return; }
+    if (!selected || !spec) { setErr('Pick a template'); return; }
+    if (spec.bodyParams > 0 && (cfg.bodyParams ?? []).some(x => !x.trim())) { setErr('Fill all body variables'); return; }
+    if (spec.headerTextParams > 0 && !cfg.headerParam?.trim()) { setErr('Fill the header text'); return; }
+    if (spec.needsHeaderMedia && !cfg.headerMediaUrl?.trim()) { setErr('Add the header media URL'); return; }
+    if (spec.isMPM && (!cfg.thumbnailProductRetailerId?.trim() || !cfg.mpmSections?.some(m => m.productIds.trim()))) { setErr('Add thumbnail + product IDs'); return; }
+    if (spec.isCatalog && !cfg.thumbnailProductRetailerId?.trim()) { setErr('Add the thumbnail product ID'); return; }
+    setErr('');
+    await onSave({
+      name: name.trim(), triggerHint, templateName, language: selected.language || 'en',
+      templateConfig: {
+        bodyParams: (cfg.bodyParams ?? []).slice(0, spec.bodyParams),
+        ...(spec.headerTextParams ? { headerParam: cfg.headerParam } : {}),
+        ...(spec.needsHeaderMedia ? { headerMediaUrl: cfg.headerMediaUrl } : {}),
+        ...((spec.isMPM || spec.isCatalog) ? { thumbnailProductRetailerId: cfg.thumbnailProductRetailerId } : {}),
+        ...(spec.isMPM ? { mpmSections: cfg.mpmSections } : {}),
+        isMPM: spec.isMPM, isCatalog: spec.isCatalog,
+      },
+    });
+  };
+
+  return (
+    <div className="bg-[#1f2c34] border border-purple-400/30 rounded-xl p-4 space-y-3">
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Draft Name *</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Diwali offer template" className={draftInput} />
+      </div>
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Template *</label>
+        <select value={templateName} onChange={e => onPick(e.target.value)} className={draftInput}>
+          <option value="">Select a template…</option>
+          {templates.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+        </select>
+      </div>
+
+      {spec && (
+        <div className="bg-[#111b21] border border-white/8 rounded-lg p-3 space-y-2">
+          {spec.bodyParams === 0 && spec.headerTextParams === 0 && !spec.needsHeaderMedia && !spec.isMPM && !spec.isCatalog && (
+            <p className="text-white/30 text-[10px]">This template needs no parameters.</p>
+          )}
+          {Array.from({ length: spec.headerTextParams }).map((_, i) => i === 0 && (
+            <input key="hp" value={cfg.headerParam ?? ''} onChange={e => setCfg(c => ({ ...c, headerParam: e.target.value }))} placeholder="Header text {{1}}" className={draftInput} />
+          ))}
+          {Array.from({ length: spec.bodyParams }).map((_, i) => (
+            <input key={i} value={cfg.bodyParams?.[i] ?? ''} onChange={e => setCfg(c => ({ ...c, bodyParams: (c.bodyParams ?? []).map((x, idx) => idx === i ? e.target.value : x) }))} placeholder={`Body variable {{${i + 1}}}`} className={draftInput} />
+          ))}
+          {spec.needsHeaderMedia && (
+            <input value={cfg.headerMediaUrl ?? ''} onChange={e => setCfg(c => ({ ...c, headerMediaUrl: e.target.value }))} placeholder={`${(spec.headerFormat ?? 'media').toLowerCase()} header URL (https://…)`} className={draftInput} />
+          )}
+          {(spec.isMPM || spec.isCatalog) && (
+            <input value={cfg.thumbnailProductRetailerId ?? ''} onChange={e => setCfg(c => ({ ...c, thumbnailProductRetailerId: e.target.value }))} placeholder="Thumbnail product retailer ID" className={draftInput} />
+          )}
+          {spec.isMPM && (
+            <input value={cfg.mpmSections?.[0]?.productIds ?? ''} onChange={e => setCfg(c => ({ ...c, mpmSections: [{ title: c.mpmSections?.[0]?.title ?? '', productIds: e.target.value }] }))} placeholder="Product IDs (comma separated)" className={draftInput} />
+          )}
+        </div>
+      )}
+
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">When to send / instructions for the agent</label>
+        <textarea value={triggerHint} onChange={e => setTriggerHint(e.target.value)} rows={2}
+          placeholder="e.g. Send when the customer asks about the Diwali offer or wants the latest collection"
+          className={`${draftInput} resize-none leading-relaxed`} />
+      </div>
+
+      {err && <p className="text-red-400 text-[11px]">{err}</p>}
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-4 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/5 transition-all">Cancel</button>
+        <button onClick={save} disabled={loading || !name.trim() || !templateName}
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs bg-purple-500 text-white font-medium hover:bg-purple-400 disabled:opacity-40 transition-all">
+          {loading ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Save Template Draft
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DraftsTab() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showTmplForm, setShowTmplForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch('/api/agent/drafts');
-    if (res.ok) setDrafts(await res.json());
+    const [dRes, tRes] = await Promise.all([fetch('/api/agent/drafts'), fetch('/api/templates')]);
+    if (dRes.ok) setDrafts(await dRes.json());
+    if (tRes.ok) {
+      const t: Template[] = await tRes.json();
+      setTemplates(t.filter(x => x.status === 'APPROVED'));
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const addDraft = async (data: typeof EMPTY_DRAFT) => {
+  const create = async (data: object) => {
     setSaving(true);
     await fetch('/api/agent/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setShowForm(false); load();
+    setSaving(false); setShowForm(false); setShowTmplForm(false); load();
   };
-
-  const updateDraft = async (id: string, data: typeof EMPTY_DRAFT) => {
+  const update = async (id: string, data: object) => {
     setSaving(true);
     await fetch(`/api/agent/drafts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     setSaving(false); setEditId(null); load();
   };
-
   const deleteDraft = async (id: string) => {
     if (!confirm('Delete this draft?')) return;
     await fetch(`/api/agent/drafts/${id}`, { method: 'DELETE' });
@@ -415,70 +543,86 @@ function DraftsTab() {
   return (
     <div className="space-y-4 max-w-2xl">
       <div className="flex items-center justify-between">
-        <p className="text-white/40 text-xs">{drafts.length} draft message{drafts.length !== 1 ? 's' : ''}</p>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-purple-500 text-white hover:bg-purple-400 transition-all"
-        >
-          <Plus size={12} />
-          New Draft
-        </button>
+        <p className="text-white/40 text-xs">{drafts.length} draft{drafts.length !== 1 ? 's' : ''}</p>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { setShowForm(true); setShowTmplForm(false); setEditId(null); }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-purple-400/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 transition-all">
+            <Plus size={12} /> Text Draft
+          </button>
+          <button onClick={() => { setShowTmplForm(true); setShowForm(false); setEditId(null); }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-purple-500 text-white hover:bg-purple-400 transition-all">
+            <Layers size={12} /> Template Draft
+          </button>
+        </div>
       </div>
 
       <div className="bg-[#111b21] border border-white/8 rounded-xl px-4 py-3 flex gap-2">
         <Info size={12} className="text-white/30 shrink-0 mt-0.5" />
         <p className="text-white/35 text-[11px] leading-relaxed">
-          Drafts are pre-written messages the agent can send verbatim. Give each draft a clear <strong className="text-white/50">trigger hint</strong> so the agent knows when to use it (e.g. "when customer asks how to pay").
+          Drafts are things the agent can send: a <strong className="text-white/50">text</strong> snippet (sent verbatim) or a fully-filled <strong className="text-white/50">template</strong>. Add a clear <strong className="text-white/50">when-to-send</strong> note so the agent knows the right moment (e.g. "when the customer wants to pay").
         </p>
       </div>
 
-      {showForm && <DraftForm onSave={addDraft} onCancel={() => setShowForm(false)} loading={saving} />}
+      {showForm && <DraftForm onSave={d => create({ ...d, kind: 'text' })} onCancel={() => setShowForm(false)} loading={saving} />}
+      {showTmplForm && <TemplateDraftForm templates={templates} onSave={d => create({ ...d, kind: 'template' })} onCancel={() => setShowTmplForm(false)} loading={saving} />}
 
       {loading ? (
         [...Array(2)].map((_, i) => <div key={i} className="h-20 bg-[#1f2c34] rounded-xl animate-pulse" />)
-      ) : drafts.length === 0 && !showForm ? (
+      ) : drafts.length === 0 && !showForm && !showTmplForm ? (
         <div className="text-center py-16 text-white/20">
           <MessageSquarePlus size={32} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">No drafts yet</p>
-          <p className="text-xs mt-1 text-white/15">E.g. UPI QR code, return policy, shipping info</p>
+          <p className="text-xs mt-1 text-white/15">Text (UPI QR, return policy) or a ready-to-send template</p>
         </div>
       ) : (
-        drafts.map(d => (
-          <div key={d.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
-            {editId === d.id ? (
-              <div className="p-3">
-                <DraftForm
-                  initial={{ name: d.name, content: d.content, triggerHint: d.triggerHint ?? '' }}
-                  onSave={data => updateDraft(d.id, data)}
-                  onCancel={() => setEditId(null)}
-                  loading={saving}
-                />
-              </div>
-            ) : (
-              <div className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white text-sm font-medium">{d.name}</p>
-                    {d.triggerHint && (
-                      <p className="text-purple-400/70 text-[10px] mt-0.5 flex items-center gap-1">
-                        <Tag size={9} /> {d.triggerHint}
-                      </p>
-                    )}
-                    <p className="text-white/40 text-[11px] mt-2 leading-relaxed line-clamp-3 whitespace-pre-wrap">{d.content}</p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => setEditId(d.id)} className="p-1.5 rounded-lg text-white/25 hover:text-purple-400 hover:bg-purple-500/10 transition-all">
-                      <Pencil size={13} />
-                    </button>
-                    <button onClick={() => deleteDraft(d.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                      <Trash2 size={13} />
-                    </button>
+        drafts.map(d => {
+          const isTemplate = d.kind === 'template';
+          return (
+            <div key={d.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
+              {editId === d.id && !isTemplate ? (
+                <div className="p-3">
+                  <DraftForm initial={{ name: d.name, content: d.content, triggerHint: d.triggerHint ?? '' }}
+                    onSave={data => update(d.id, { ...data, kind: 'text' })} onCancel={() => setEditId(null)} loading={saving} />
+                </div>
+              ) : editId === d.id && isTemplate ? (
+                <div className="p-3">
+                  <TemplateDraftForm templates={templates}
+                    initial={{ name: d.name, triggerHint: d.triggerHint ?? '', templateName: d.templateName ?? '', templateConfig: d.templateConfig ?? {} }}
+                    onSave={data => update(d.id, { ...data, kind: 'template' })} onCancel={() => setEditId(null)} loading={saving} />
+                </div>
+              ) : (
+                <div className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-white text-sm font-medium">{d.name}</p>
+                        {isTemplate
+                          ? <span className="text-[9px] bg-purple-500/15 text-purple-300 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><Layers size={8} /> Template</span>
+                          : <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full">Text</span>}
+                      </div>
+                      {d.triggerHint && (
+                        <p className="text-purple-400/70 text-[10px] mt-0.5 flex items-center gap-1">
+                          <Tag size={9} /> {d.triggerHint}
+                        </p>
+                      )}
+                      {isTemplate
+                        ? <p className="text-white/40 text-[11px] mt-2">Sends template <strong className="text-white/60">{d.templateName}</strong>{d.templateConfig?.bodyParams?.length ? ` · ${d.templateConfig.bodyParams.length} param(s)` : ''}</p>
+                        : <p className="text-white/40 text-[11px] mt-2 leading-relaxed line-clamp-3 whitespace-pre-wrap">{d.content}</p>}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => setEditId(d.id)} className="p-1.5 rounded-lg text-white/25 hover:text-purple-400 hover:bg-purple-500/10 transition-all">
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => deleteDraft(d.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
-        ))
+              )}
+            </div>
+          );
+        })
       )}
     </div>
   );

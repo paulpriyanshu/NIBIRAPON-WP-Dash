@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
-import { agentSettings, catalogProducts, agentDrafts, type ProductMedia } from '@/db/schema';
+import { agentSettings, catalogProducts, agentDrafts, type ProductMedia, type DraftTemplateConfig } from '@/db/schema';
 import { eq, and, isNotNull } from 'drizzle-orm';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
@@ -13,7 +13,8 @@ export interface AgentListOut {
   body: string; button: string; header?: string;
   sections: { title?: string; rows: { id: string; title: string; description?: string }[] }[];
 }
-export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; shouldRespond: boolean; }
+export interface AgentTemplateOut { name: string; language: string; config: DraftTemplateConfig; }
+export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; shouldRespond: boolean; }
 
 type ProductRow = typeof catalogProducts.$inferSelect;
 
@@ -85,6 +86,8 @@ function formatCatalogContext(products: ProductRow[]): string {
 
 // ── Fetch agent settings + drafts ────────────────────────────────────────────
 
+type DraftRow = typeof agentDrafts.$inferSelect;
+
 async function getContextData(userMessage: string): Promise<{
   settingsPrompt: string;
   agentName: string;
@@ -92,6 +95,8 @@ async function getContextData(userMessage: string): Promise<{
   categories: string[];
   catalogContext: string;
   draftsContext: string;
+  templateDraftsContext: string;
+  templateDrafts: DraftRow[];
 }> {
   const [settingsRow, drafts, products, allInContext] = await Promise.all([
     db.select().from(agentSettings).limit(1).then(r => r[0]),
@@ -107,12 +112,23 @@ async function getContextData(userMessage: string): Promise<{
   const settingsPrompt = settingsRow?.systemPrompt ?? '';
   const categories     = [...new Set(allInContext.map(p => p.category).filter((c): c is string => !!c))];
 
+  const textDrafts     = drafts.filter(d => d.kind !== 'template');
+  const templateDrafts = drafts.filter(d => d.kind === 'template' && d.templateName);
+
   let draftsContext = '';
-  if (drafts.length > 0) {
-    const list = drafts
+  if (textDrafts.length > 0) {
+    const list = textDrafts
       .map(d => `### ${d.name}${d.triggerHint ? ` (send ${d.triggerHint})` : ''}\n${d.content}`)
       .join('\n\n');
     draftsContext = `## Pre-written messages you can send verbatim:\n${list}`;
+  }
+
+  let templateDraftsContext = '';
+  if (templateDrafts.length > 0) {
+    const list = templateDrafts
+      .map(d => `- [template draft id: ${d.id}] "${d.name}" — sends the "${d.templateName}" template. Send when: ${d.triggerHint || 'it fits the situation'}.`)
+      .join('\n');
+    templateDraftsContext = `## Templates you can send (call send_template_draft with the id):\n${list}`;
   }
 
   return {
@@ -122,12 +138,14 @@ async function getContextData(userMessage: string): Promise<{
     categories,
     catalogContext: formatCatalogContext(products),
     draftsContext,
+    templateDraftsContext,
+    templateDrafts,
   };
 }
 
 // ── Base system prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, extra: string, categories: string[]): string {
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, extra: string, categories: string[]): string {
   return `
 You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion.
 
@@ -157,8 +175,12 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 - When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. A tappable WhatsApp list of our categories is sent so they can pick one. When they pick a category, show that category's products.
 - Available categories: ${categories.length ? categories.join(', ') : '(none configured)'}.
 
+## Sending a saved template
+- When the situation matches a template's "Send when" note below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short text reply too. Only use ids listed below.
+
 ${catalogCtx ? catalogCtx + '\n' : ''}
 ${draftsCtx  ? draftsCtx  + '\n' : ''}
+${templateDraftsCtx ? templateDraftsCtx + '\n' : ''}
 ${extra      ? '## Additional instructions from admin:\n' + extra : ''}
 `.trim();
 }
@@ -224,6 +246,19 @@ const SEND_LIST_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
+const SEND_TEMPLATE_DRAFT_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'send_template_draft',
+    description: "Send a saved WhatsApp template (a 'template draft') to the customer. Use only when the situation matches the template's 'Send when' note.",
+    parameters: {
+      type: 'object',
+      properties: { draft_id: { type: 'string', description: 'The template draft id from the list.' } },
+      required: ['draft_id'],
+    },
+  },
+};
+
 /** Build a WhatsApp list from the inventory categories. */
 function buildCategoryList(categories: string[]): AgentListOut | undefined {
   const rows = categories.slice(0, 10).map(c => ({ id: `category:${c}`, title: c.slice(0, 24) }));
@@ -243,10 +278,10 @@ export async function runAgent(
 ): Promise<AgentResult> {
   if (!isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
 
-  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext } =
+  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts } =
     await getContextData(userMessage);
 
-  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, settingsPrompt, categories);
+  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, settingsPrompt, categories);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -260,19 +295,24 @@ export async function runAgent(
       messages,
       max_tokens:  400,
       temperature: 0.85,
-      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL],
+      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL, SEND_TEMPLATE_DRAFT_TOOL],
       tool_choice: 'auto',
     });
 
     const choice = response.choices[0]?.message;
     const reply  = choice?.content?.trim() ?? '';
 
-    // Gather product ids and whether a category list was requested.
+    // Gather product ids, a list request, and any template draft to send.
     const ids: string[] = [];
     let wantsList = false;
+    let draftId: string | undefined;
     for (const tc of choice?.tool_calls ?? []) {
       if (tc.type !== 'function') continue;
       if (tc.function.name === 'send_category_list') { wantsList = true; continue; }
+      if (tc.function.name === 'send_template_draft') {
+        try { draftId = String(JSON.parse(tc.function.arguments || '{}').draft_id || ''); } catch { /* ignore */ }
+        continue;
+      }
       if (tc.function.name !== 'send_product_media') continue;
       try {
         const args = JSON.parse(tc.function.arguments || '{}');
@@ -282,7 +322,15 @@ export async function runAgent(
     const media = collectMedia(products, ids);
     const list  = wantsList ? buildCategoryList(categories) : undefined;
 
-    return { reply, media, list, shouldRespond: reply.length > 0 || media.length > 0 || !!list };
+    let template: AgentTemplateOut | undefined;
+    if (draftId) {
+      const d = templateDrafts.find(x => x.id === draftId);
+      if (d?.templateName) {
+        template = { name: d.templateName, language: d.language || 'en', config: (d.templateConfig ?? {}) as DraftTemplateConfig };
+      }
+    }
+
+    return { reply, media, list, template, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template };
   } catch (err) {
     console.error('[agent] OpenAI error:', err instanceof Error ? err.message : err);
     return { reply: '', media: [], shouldRespond: false };

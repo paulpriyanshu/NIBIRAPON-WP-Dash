@@ -6,7 +6,7 @@ import {
   broadcastRecipients, broadcastCampaigns,
 } from '@/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
-import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage } from '@/lib/whatsapp-api';
+import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage, sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
 import { getSendUrl } from '@/lib/inventory-media';
 import { advanceRunOnButton } from '@/lib/flow-store';
@@ -396,8 +396,8 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, list, shouldRespond } = await runAgent(userText, chatHistory);
-  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} reply="${reply?.slice(0, 60)}…"`);
+  const { reply, media, list, template, shouldRespond } = await runAgent(userText, chatHistory);
+  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;
 
@@ -467,7 +467,51 @@ async function agentReply({
     }
   }
 
-  // ── 3. Category list (tappable) ───────────────────────────────────────────
+  // ── 3. Saved template draft ───────────────────────────────────────────────
+  if (template) {
+    try {
+      const c = template.config || {};
+      let waRes: any;
+      if (c.isMPM && c.thumbnailProductRetailerId && c.mpmSections?.length) {
+        const sections = c.mpmSections
+          .map(s => ({
+            title: s.title?.trim() || 'Products',
+            product_items: (s.productIds ?? '').split(',').map((id: string) => ({ product_retailer_id: id.trim() })).filter((x: any) => x.product_retailer_id),
+          }))
+          .filter(s => s.product_items.length > 0);
+        waRes = await sendMPMTemplateMessage({
+          to: toPhone, templateName: template.name, language: template.language,
+          headerParam: c.headerParam || undefined, bodyParams: c.bodyParams ?? [],
+          thumbnailProductRetailerId: c.thumbnailProductRetailerId, sections,
+        });
+      } else {
+        waRes = await sendRichTemplateMessage({
+          to: toPhone, templateName: template.name, language: template.language,
+          bodyParams: c.bodyParams ?? [], headerParam: c.headerParam || undefined,
+          headerMediaUrl: c.headerMediaUrl || undefined, isCatalogTemplate: !!c.isCatalog,
+        });
+      }
+      const waId = waRes?.messages?.[0]?.id;
+      console.log(`[agent] ✓ template "${template.name}" send waId=${waId ?? 'local'}`);
+      await db.insert(messages).values({
+        id:            waId || localId('tmpl'),
+        conversationId,
+        fromNumber:    bizPhone,
+        toNumber:      toPhone,
+        type:          'template',
+        templateName:  template.name,
+        text:          `[Template] ${template.name}`,
+        status:        waId ? 'sent' : 'failed',
+        isOutgoing:    true,
+        sentBy:        'agent',
+        sentAt:        new Date(),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.error('[agent] template send failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── 4. Category list (tappable) ───────────────────────────────────────────
   if (list) {
     try {
       const waRes = await sendListMessage({

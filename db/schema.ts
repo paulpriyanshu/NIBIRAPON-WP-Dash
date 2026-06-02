@@ -421,14 +421,32 @@ export const catalogProducts = pgTable('catalog_products', {
 
 // ─── Agent: draft messages ────────────────────────────────────────────────────
 
+// A draft is either a verbatim text snippet (kind 'text') or a fully-configured
+// WhatsApp template the agent can send (kind 'template'). triggerHint is the
+// admin's description of WHEN the agent should send it.
+export interface DraftTemplateConfig {
+  bodyParams?: string[];
+  headerParam?: string;
+  headerMediaUrl?: string;
+  thumbnailProductRetailerId?: string;
+  mpmSections?: { title: string; productIds: string }[];
+  isMPM?: boolean;
+  isCatalog?: boolean;
+}
+
 export const agentDrafts = pgTable('agent_drafts', {
-  id:           uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-  name:         varchar('name', { length: 255 }).notNull(),
-  content:      text('content').notNull(),
-  triggerHint:  text('trigger_hint'),  // e.g. "when customer wants to pay"
-  isActive:     boolean('is_active').notNull().default(true),
-  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  id:             uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  name:           varchar('name', { length: 255 }).notNull(),
+  kind:           varchar('kind', { length: 20 }).notNull().default('text'), // 'text' | 'template'
+  content:        text('content').notNull().default(''),  // text drafts: the message
+  triggerHint:    text('trigger_hint'),  // when to send / instructions for the agent
+  // Template drafts:
+  templateName:   text('template_name'),
+  language:       varchar('language', { length: 10 }).default('en'),
+  templateConfig: jsonb('template_config').$type<DraftTemplateConfig>(),
+  isActive:       boolean('is_active').notNull().default(true),
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('agent_drafts_active_idx').on(t.isActive),
 ]);

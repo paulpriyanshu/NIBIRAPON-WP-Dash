@@ -14,14 +14,27 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, content, triggerHint } = await req.json();
-    if (!name?.trim() || !content?.trim()) {
-      return NextResponse.json({ error: 'name and content are required' }, { status: 400 });
+    const { name, kind = 'text', content, triggerHint, templateName, language, templateConfig } = await req.json();
+    if (!name?.trim()) {
+      return NextResponse.json({ error: 'name is required' }, { status: 400 });
+    }
+    if (kind === 'template') {
+      if (!templateName) return NextResponse.json({ error: 'templateName is required for a template draft' }, { status: 400 });
+    } else if (!content?.trim()) {
+      return NextResponse.json({ error: 'content is required for a text draft' }, { status: 400 });
     }
 
     const [inserted] = await db
       .insert(agentDrafts)
-      .values({ name: name.trim(), content: content.trim(), triggerHint: triggerHint || null })
+      .values({
+        name:           name.trim(),
+        kind,
+        content:        kind === 'template' ? '' : content.trim(),
+        triggerHint:    triggerHint || null,
+        templateName:   kind === 'template' ? templateName : null,
+        language:       kind === 'template' ? (language || 'en') : null,
+        templateConfig: kind === 'template' ? (templateConfig ?? {}) : null,
+      })
       .returning({ id: agentDrafts.id });
 
     return NextResponse.json({ id: inserted.id }, { status: 201 });

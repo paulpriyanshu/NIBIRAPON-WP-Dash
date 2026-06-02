@@ -84,20 +84,25 @@ export interface TemplateParamSpec {
   isCatalog: boolean;          // catalog template (needs thumbnail)
 }
 
-export function templateParamSpec(node: FlowNode): TemplateParamSpec | null {
-  const t = getTemplate(node);
-  if (!t?.name) return null;
+/** Param spec computed directly from a Template (no flow node). */
+export function specFromTemplate(t: Template): Omit<TemplateParamSpec, 'nodeId'> {
   const body = t.components.find(c => c.type === 'BODY')?.text ?? '';
   const header = t.components.find(c => c.type === 'HEADER');
   const needsHeaderMedia = !!header?.format && header.format !== 'TEXT';
   const headerTextParams = header?.format === 'TEXT' ? countPlaceholders(header.text ?? '') : 0;
   const { isMPM, isCatalog } = templateKindFlags(t);
   return {
-    nodeId: node.id, templateName: t.name,
+    templateName: t.name,
     bodyParams: countPlaceholders(body),
     headerTextParams, needsHeaderMedia, headerFormat: header?.format,
     isMPM, isCatalog,
   };
+}
+
+export function templateParamSpec(node: FlowNode): TemplateParamSpec | null {
+  const t = getTemplate(node);
+  if (!t?.name) return null;
+  return { nodeId: node.id, ...specFromTemplate(t) };
 }
 
 /** Does this template require any input before launch? */

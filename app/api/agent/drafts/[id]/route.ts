@@ -9,15 +9,18 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const { name, content, triggerHint, isActive } = await req.json();
+    const { name, content, triggerHint, isActive, templateName, language, templateConfig } = await req.json();
 
     await db
       .update(agentDrafts)
       .set({
-        ...(name        !== undefined && { name }),
-        ...(content     !== undefined && { content }),
-        ...(triggerHint !== undefined && { triggerHint }),
-        ...(isActive    !== undefined && { isActive }),
+        ...(name           !== undefined && { name }),
+        ...(content        !== undefined && { content }),
+        ...(triggerHint    !== undefined && { triggerHint }),
+        ...(isActive       !== undefined && { isActive }),
+        ...(templateName   !== undefined && { templateName }),
+        ...(language       !== undefined && { language }),
+        ...(templateConfig !== undefined && { templateConfig }),
         updatedAt: new Date(),
       })
       .where(eq(agentDrafts.id, id));
