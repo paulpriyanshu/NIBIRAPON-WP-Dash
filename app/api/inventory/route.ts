@@ -1,31 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { catalogProducts, type ProductMedia } from '@/db/schema';
-import { desc } from 'drizzle-orm';
+import { getInventoryPage, getAllInventory } from '@/lib/queries/inventory';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const rows = await db
-      .select({
-        id:             catalogProducts.id,
-        name:           catalogProducts.name,
-        description:    catalogProducts.description,
-        priceRange:     catalogProducts.priceRange,
-        category:       catalogProducts.category,
-        fabric:         catalogProducts.fabric,
-        occasions:      catalogProducts.occasions,
-        media:          catalogProducts.media,
-        customInfo:     catalogProducts.customInfo,
-        isActive:       catalogProducts.isActive,
-        inAgentContext: catalogProducts.inAgentContext,
-        syncedAt:       catalogProducts.syncedAt,
-        createdAt:      catalogProducts.createdAt,
-        // Exclude the large embedding array — not needed by the UI
-      })
-      .from(catalogProducts)
-      .orderBy(desc(catalogProducts.createdAt));
+    const { searchParams } = new URL(req.url);
+    const limit = searchParams.get('limit');
 
-    return NextResponse.json(rows);
+    // Paginated mode (opt-in via ?limit=) → { items, nextCursor } for infinite scroll.
+    if (limit) {
+      const page = await getInventoryPage({
+        limit: parseInt(limit, 10) || 30,
+        cursor: searchParams.get('cursor'),
+      });
+      return NextResponse.json(page);
+    }
+
+    // Legacy: full array (the agent catalog tab and other callers rely on this).
+    return NextResponse.json(await getAllInventory());
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

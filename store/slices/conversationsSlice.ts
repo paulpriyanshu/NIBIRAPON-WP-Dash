@@ -66,6 +66,13 @@ const conversationsSlice = createSlice({
   name: 'conversations',
   initialState,
   reducers: {
+    // Seed the list from server-rendered data (no client fetch / spinner on load).
+    setConversations(state, action: PayloadAction<Conversation[]>) {
+      const sorted = [...action.payload];
+      sortConversations(sorted);
+      state.conversations = sorted;
+      state.loading = false;
+    },
     selectConversation(state, action: PayloadAction<string>) {
       state.selectedId = action.payload;
       const conv = state.conversations.find((c) => c.id === action.payload);
@@ -154,6 +161,7 @@ const conversationsSlice = createSlice({
 });
 
 export const {
+  setConversations,
   selectConversation, clearConversation, setSearchQuery, setFilter, addMessage, updateMessageStatus,
   updateConversationStatus, addConversation, setTyping, pinConversation, muteConversation, setAgentEnabled,
 } = conversationsSlice.actions;

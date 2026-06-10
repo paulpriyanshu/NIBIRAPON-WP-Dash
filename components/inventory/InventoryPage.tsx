@@ -1,5 +1,6 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useRef } from 'react';
+import { useInfiniteList } from '@/hooks/useInfiniteList';
 import {
   Package, Plus, Trash2, Pencil, Check, Loader2,
   ChevronDown, ChevronUp, Layers, Calendar, StickyNote,
@@ -261,39 +262,34 @@ function ProductFormCard({ initial, onSave, onCancel, loading }: {
 
 /* ── Main page ───────────────────────────────────────────────────── */
 
-export default function InventoryPage() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading,  setLoading]  = useState(true);
+export default function InventoryPage({ initialItems = [], initialCursor = null }: {
+  initialItems?: Product[];
+  initialCursor?: string | null;
+}) {
+  const { items: products, setItems: setProducts, loading, hasMore, reload, sentinelRef } =
+    useInfiniteList<Product>({ endpoint: '/api/inventory', limit: 30, initialItems, initialCursor });
+
   const [showForm, setShowForm] = useState(false);
   const [editId,   setEditId]   = useState<string | null>(null);
   const [saving,   setSaving]   = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const res = await fetch('/api/inventory');
-    if (res.ok) setProducts(await res.json());
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
   const addProduct = async (data: ProductForm) => {
     setSaving(true);
     await fetch('/api/inventory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setShowForm(false); load();
+    setSaving(false); setShowForm(false); reload();
   };
 
   const updateProduct = async (id: string, data: ProductForm) => {
     setSaving(true);
     await fetch(`/api/inventory/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setEditId(null); load();
+    setSaving(false); setEditId(null); reload();
   };
 
   const deleteProduct = async (id: string) => {
     if (!confirm('Delete this product from inventory?')) return;
     await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
-    load();
+    setProducts(prev => prev.filter(p => p.id !== id));
   };
 
   return (
@@ -325,7 +321,7 @@ export default function InventoryPage() {
           <ProductFormCard onSave={addProduct} onCancel={() => setShowForm(false)} loading={saving} />
         )}
 
-        {loading ? (
+        {products.length === 0 && loading ? (
           [...Array(3)].map((_, i) => <div key={i} className="h-16 bg-[#1f2c34] rounded-xl animate-pulse" />)
         ) : products.length === 0 && !showForm ? (
           <div className="text-center py-16 text-white/20">
@@ -429,6 +425,13 @@ export default function InventoryPage() {
               )}
             </div>
           ))
+        )}
+
+        {/* Infinite-scroll sentinel — loads the next page as it nears view. */}
+        {hasMore && (
+          <div ref={sentinelRef} className="py-4 flex justify-center">
+            {loading && <Loader2 size={16} className="animate-spin text-white/30" />}
+          </div>
         )}
       </div>
     </div>

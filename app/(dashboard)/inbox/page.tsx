@@ -1,36 +1,12 @@
-'use client';
-import { useEffect } from 'react';
-import { useAppDispatch, useAppSelector } from '@/hooks/redux';
-import { fetchConversations } from '@/store/slices/conversationsSlice';
-import ConversationList from '@/components/chat/ConversationList';
-import ChatWindow from '@/components/chat/ChatWindow';
+import type { ComponentProps } from 'react';
+import InboxClient from '@/components/chat/InboxClient';
+import { getConversations } from '@/lib/queries/conversations';
 
-export default function InboxPage() {
-  const dispatch = useAppDispatch();
-  const selectedId = useAppSelector((s) => s.conversations.selectedId);
+export const dynamic = 'force-dynamic';
 
-  useEffect(() => {
-    dispatch(fetchConversations());
-  }, [dispatch]);
+type Initial = ComponentProps<typeof InboxClient>['initial'];
 
-  return (
-    <div className="flex h-full overflow-hidden">
-      {/* Conversation list — hidden on mobile when a chat is open */}
-      <div className={`
-        flex-shrink-0 h-full overflow-hidden
-        w-full md:w-80 xl:w-96
-        ${selectedId ? 'hidden md:flex md:flex-col' : 'flex flex-col'}
-      `}>
-        <ConversationList />
-      </div>
-
-      {/* Chat window — hidden on mobile when no chat selected */}
-      <div className={`
-        flex-1 h-full overflow-hidden
-        ${selectedId ? 'flex' : 'hidden md:flex'}
-      `}>
-        <ChatWindow />
-      </div>
-    </div>
-  );
+export default async function InboxPage() {
+  const conversations = await getConversations();
+  return <InboxClient initial={conversations as unknown as Initial} />;
 }

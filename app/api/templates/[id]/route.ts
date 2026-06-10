@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
 import { updateMessageTemplate } from '@/lib/whatsapp-api';
 
 export async function PATCH(
@@ -14,6 +15,7 @@ export async function PATCH(
     }
 
     const result = await updateMessageTemplate(id, components);
+    revalidateTag('templates', 'max'); // refresh the cached catalog after an edit
     return NextResponse.json({ success: true, status: result.status ?? 'PENDING' });
   } catch (err: any) {
     console.error('[Template PATCH]', err);
