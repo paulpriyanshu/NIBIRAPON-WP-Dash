@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { agentDrafts } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { agentDraftsColl, toObjectId } from '@/lib/template-store';
 
 export async function PATCH(
   req: NextRequest,
@@ -9,22 +7,19 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const { name, content, triggerHint, isActive, templateName, language, templateConfig } = await req.json();
+    const _id = toObjectId(id);
+    if (!_id) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
-    await db
-      .update(agentDrafts)
-      .set({
-        ...(name           !== undefined && { name }),
-        ...(content        !== undefined && { content }),
-        ...(triggerHint    !== undefined && { triggerHint }),
-        ...(isActive       !== undefined && { isActive }),
-        ...(templateName   !== undefined && { templateName }),
-        ...(language       !== undefined && { language }),
-        ...(templateConfig !== undefined && { templateConfig }),
-        updatedAt: new Date(),
-      })
-      .where(eq(agentDrafts.id, id));
+    const { name, content, triggerHint, isActive, templateMessageId } = await req.json();
+    const set: Record<string, unknown> = { updatedAt: new Date() };
+    if (name              !== undefined) set.name = name;
+    if (content           !== undefined) set.content = content;
+    if (triggerHint       !== undefined) set.triggerHint = triggerHint;
+    if (isActive          !== undefined) set.isActive = isActive;
+    if (templateMessageId !== undefined) set.templateMessageId = templateMessageId;
 
+    const coll = await agentDraftsColl();
+    await coll.updateOne({ _id }, { $set: set });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -37,7 +32,11 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    await db.delete(agentDrafts).where(eq(agentDrafts.id, id));
+    const _id = toObjectId(id);
+    if (!_id) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
+
+    const coll = await agentDraftsColl();
+    await coll.deleteOne({ _id });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

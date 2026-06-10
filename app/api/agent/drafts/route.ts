@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { agentDrafts } from '@/db/schema';
-import { desc } from 'drizzle-orm';
+import { agentDraftsColl, serializeId } from '@/lib/template-store';
 
 export async function GET() {
   try {
-    const rows = await db.select().from(agentDrafts).orderBy(desc(agentDrafts.createdAt));
-    return NextResponse.json(rows);
+    const coll = await agentDraftsColl();
+    const rows = await coll.find({}).sort({ createdAt: -1 }).toArray();
+    return NextResponse.json(rows.map(serializeId));
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -14,30 +13,30 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, kind = 'text', content, triggerHint, templateName, language, templateConfig } = await req.json();
+    const { name, kind = 'text', content, triggerHint, templateMessageId } = await req.json();
     if (!name?.trim()) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
     if (kind === 'template') {
-      if (!templateName) return NextResponse.json({ error: 'templateName is required for a template draft' }, { status: 400 });
+      if (!templateMessageId) return NextResponse.json({ error: 'templateMessageId is required for a template draft' }, { status: 400 });
     } else if (!content?.trim()) {
       return NextResponse.json({ error: 'content is required for a text draft' }, { status: 400 });
     }
 
-    const [inserted] = await db
-      .insert(agentDrafts)
-      .values({
-        name:           name.trim(),
-        kind,
-        content:        kind === 'template' ? '' : content.trim(),
-        triggerHint:    triggerHint || null,
-        templateName:   kind === 'template' ? templateName : null,
-        language:       kind === 'template' ? (language || 'en') : null,
-        templateConfig: kind === 'template' ? (templateConfig ?? {}) : null,
-      })
-      .returning({ id: agentDrafts.id });
+    const now = new Date();
+    const coll = await agentDraftsColl();
+    const result = await coll.insertOne({
+      name:              name.trim(),
+      kind,
+      content:           kind === 'template' ? '' : content.trim(),
+      triggerHint:       triggerHint || null,
+      templateMessageId: kind === 'template' ? templateMessageId : undefined,
+      isActive:          true,
+      createdAt:         now,
+      updatedAt:         now,
+    });
 
-    return NextResponse.json({ id: inserted.id }, { status: 201 });
+    return NextResponse.json({ id: result.insertedId.toString() }, { status: 201 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

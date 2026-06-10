@@ -9,6 +9,7 @@ import {
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
   type Flow, type FlowButton, type FlowNode, type CompiledFlow,
 } from '@/lib/flow-engine';
+import { configToSendPayload } from '@/lib/templates';
 
 /** Send a template node with its configured params (handles MPM/catalog). Returns the wamid. */
 async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise<string | undefined> {
@@ -20,30 +21,10 @@ async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise
   const p = flow.templateParams?.[nodeId] ?? { bodyParams: [] };
   const { isMPM, isCatalog } = templateKindFlags(t);
 
-  if (isMPM && p.thumbnailProductRetailerId && p.mpmSections?.length) {
-    const sections = p.mpmSections
-      .map(s => ({
-        title: s.title?.trim() || 'Products',
-        product_items: (s.productIds ?? '').split(',').map(id => ({ product_retailer_id: id.trim() })).filter(x => x.product_retailer_id),
-      }))
-      .filter(s => s.product_items.length > 0);
-    const res = await sendMPMTemplateMessage({
-      to, templateName: info.name, language: info.language,
-      headerParam: p.headerParam || undefined,
-      bodyParams: p.bodyParams ?? [],
-      thumbnailProductRetailerId: p.thumbnailProductRetailerId,
-      sections,
-    });
-    return res?.messages?.[0]?.id;
-  }
-
-  const res = await sendRichTemplateMessage({
-    to, templateName: info.name, language: info.language,
-    bodyParams: p.bodyParams ?? [],
-    headerParam: p.headerParam || undefined,
-    headerMediaUrl: p.headerMediaUrl || undefined,
-    isCatalogTemplate: isCatalog,
-  });
+  const payload = configToSendPayload(to, info.name, info.language, { ...p, isMPM, isCatalog });
+  const res = payload.kind === 'mpm'
+    ? await sendMPMTemplateMessage(payload.args)
+    : await sendRichTemplateMessage(payload.args);
   return res?.messages?.[0]?.id;
 }
 

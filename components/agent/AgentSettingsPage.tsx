@@ -7,8 +7,7 @@ import {
   StickyNote, ImageIcon, Film,
 } from 'lucide-react';
 import NextLink from 'next/link';
-import { specFromTemplate } from '@/lib/flow-engine';
-import type { Template } from '@/types';
+import type { TemplateMessage } from '@/lib/templates';
 
 /* ── types ───────────────────────────────────────────────────────── */
 
@@ -27,17 +26,10 @@ interface Product {
   isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
 }
 
-interface DraftTemplateConfig {
-  bodyParams?: string[]; headerParam?: string; headerMediaUrl?: string;
-  thumbnailProductRetailerId?: string; mpmSections?: { title: string; productIds: string }[];
-  isMPM?: boolean; isCatalog?: boolean;
-}
-
 interface Draft {
   id: string; name: string; kind?: 'text' | 'template'; content: string;
   triggerHint: string | null; isActive: boolean;
-  templateName?: string | null; language?: string | null;
-  templateConfig?: DraftTemplateConfig | null;
+  templateMessageId?: string | null;
 }
 
 /** Browser-renderable source for a media item. */
@@ -388,62 +380,33 @@ function DraftForm({
   );
 }
 
-/* ── Template draft form ─────────────────────────────────────────── */
+/* ── Template draft form — pick a saved template message ─────────── */
 
 const draftInput = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-purple-400/50 transition-colors';
 
 interface TemplateDraftData {
-  name: string; triggerHint: string; templateName: string; language: string;
-  templateConfig: DraftTemplateConfig;
+  name: string; triggerHint: string; templateMessageId: string;
 }
 
-function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
-  templates: Template[];
+function TemplateDraftForm({ messages, initial, onSave, onCancel, loading }: {
+  messages: TemplateMessage[];
   initial?: Partial<TemplateDraftData>;
   onSave: (d: TemplateDraftData) => Promise<void>;
   onCancel: () => void;
   loading: boolean;
 }) {
-  const [name, setName]               = useState(initial?.name ?? '');
-  const [triggerHint, setTriggerHint] = useState(initial?.triggerHint ?? '');
-  const [templateName, setTemplateName] = useState(initial?.templateName ?? '');
-  const [cfg, setCfg] = useState<DraftTemplateConfig>(initial?.templateConfig ?? {});
+  const [name, setName]                       = useState(initial?.name ?? '');
+  const [triggerHint, setTriggerHint]         = useState(initial?.triggerHint ?? '');
+  const [templateMessageId, setTemplateMessageId] = useState(initial?.templateMessageId ?? '');
   const [err, setErr] = useState('');
 
-  const selected = templates.find(t => t.name === templateName);
-  const spec = selected ? specFromTemplate(selected) : null;
-
-  const onPick = (tn: string) => {
-    setTemplateName(tn);
-    const t = templates.find(x => x.name === tn);
-    const s = t ? specFromTemplate(t) : null;
-    setCfg({
-      bodyParams: Array.from({ length: s?.bodyParams ?? 0 }, () => ''),
-      headerParam: '', headerMediaUrl: '', thumbnailProductRetailerId: '',
-      mpmSections: s?.isMPM ? [{ title: '', productIds: '' }] : undefined,
-    });
-  };
+  const selected = messages.find(m => m.id === templateMessageId);
 
   const save = async () => {
     if (!name.trim()) { setErr('Name is required'); return; }
-    if (!selected || !spec) { setErr('Pick a template'); return; }
-    if (spec.bodyParams > 0 && (cfg.bodyParams ?? []).some(x => !x.trim())) { setErr('Fill all body variables'); return; }
-    if (spec.headerTextParams > 0 && !cfg.headerParam?.trim()) { setErr('Fill the header text'); return; }
-    if (spec.needsHeaderMedia && !cfg.headerMediaUrl?.trim()) { setErr('Add the header media URL'); return; }
-    if (spec.isMPM && (!cfg.thumbnailProductRetailerId?.trim() || !cfg.mpmSections?.some(m => m.productIds.trim()))) { setErr('Add thumbnail + product IDs'); return; }
-    if (spec.isCatalog && !cfg.thumbnailProductRetailerId?.trim()) { setErr('Add the thumbnail product ID'); return; }
+    if (!templateMessageId) { setErr('Pick a saved message'); return; }
     setErr('');
-    await onSave({
-      name: name.trim(), triggerHint, templateName, language: selected.language || 'en',
-      templateConfig: {
-        bodyParams: (cfg.bodyParams ?? []).slice(0, spec.bodyParams),
-        ...(spec.headerTextParams ? { headerParam: cfg.headerParam } : {}),
-        ...(spec.needsHeaderMedia ? { headerMediaUrl: cfg.headerMediaUrl } : {}),
-        ...((spec.isMPM || spec.isCatalog) ? { thumbnailProductRetailerId: cfg.thumbnailProductRetailerId } : {}),
-        ...(spec.isMPM ? { mpmSections: cfg.mpmSections } : {}),
-        isMPM: spec.isMPM, isCatalog: spec.isCatalog,
-      },
-    });
+    await onSave({ name: name.trim(), triggerHint, templateMessageId });
   };
 
   return (
@@ -453,40 +416,24 @@ function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Diwali offer template" className={draftInput} />
       </div>
       <div>
-        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Template *</label>
-        <select value={templateName} onChange={e => onPick(e.target.value)} className={draftInput}>
-          <option value="">Select a template…</option>
-          {templates.map(t => (
-            <option key={t.id} value={t.name} disabled={t.status !== 'APPROVED'}>
-              {t.name}{t.status !== 'APPROVED' ? ` (${t.status.toLowerCase()})` : ''}
-            </option>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Saved message *</label>
+        <select value={templateMessageId} onChange={e => setTemplateMessageId(e.target.value)} className={draftInput}>
+          <option value="">Select a saved message…</option>
+          {messages.map(m => (
+            <option key={m.id} value={m.id}>{m.name} ({m.templateName})</option>
           ))}
         </select>
-        {selected && selected.status !== 'APPROVED' && (
-          <p className="text-amber-400/70 text-[10px] mt-1">This template isn't approved yet — WhatsApp may reject it when the agent sends.</p>
+        {messages.length === 0 ? (
+          <p className="text-amber-400/70 text-[10px] mt-1">No saved messages yet — create one in <NextLink href="/templates" className="underline">Templates → Messages</NextLink>.</p>
+        ) : (
+          <p className="text-white/30 text-[10px] mt-1">Compose new ones in <NextLink href="/templates" className="text-purple-300 hover:underline">Templates → Messages</NextLink>.</p>
         )}
       </div>
 
-      {spec && (
-        <div className="bg-[#111b21] border border-white/8 rounded-lg p-3 space-y-2">
-          {spec.bodyParams === 0 && spec.headerTextParams === 0 && !spec.needsHeaderMedia && !spec.isMPM && !spec.isCatalog && (
-            <p className="text-white/30 text-[10px]">This template needs no parameters.</p>
-          )}
-          {Array.from({ length: spec.headerTextParams }).map((_, i) => i === 0 && (
-            <input key="hp" value={cfg.headerParam ?? ''} onChange={e => setCfg(c => ({ ...c, headerParam: e.target.value }))} placeholder="Header text {{1}}" className={draftInput} />
-          ))}
-          {Array.from({ length: spec.bodyParams }).map((_, i) => (
-            <input key={i} value={cfg.bodyParams?.[i] ?? ''} onChange={e => setCfg(c => ({ ...c, bodyParams: (c.bodyParams ?? []).map((x, idx) => idx === i ? e.target.value : x) }))} placeholder={`Body variable {{${i + 1}}}`} className={draftInput} />
-          ))}
-          {spec.needsHeaderMedia && (
-            <input value={cfg.headerMediaUrl ?? ''} onChange={e => setCfg(c => ({ ...c, headerMediaUrl: e.target.value }))} placeholder={`${(spec.headerFormat ?? 'media').toLowerCase()} header URL (https://…)`} className={draftInput} />
-          )}
-          {(spec.isMPM || spec.isCatalog) && (
-            <input value={cfg.thumbnailProductRetailerId ?? ''} onChange={e => setCfg(c => ({ ...c, thumbnailProductRetailerId: e.target.value }))} placeholder="Thumbnail product retailer ID" className={draftInput} />
-          )}
-          {spec.isMPM && (
-            <input value={cfg.mpmSections?.[0]?.productIds ?? ''} onChange={e => setCfg(c => ({ ...c, mpmSections: [{ title: c.mpmSections?.[0]?.title ?? '', productIds: e.target.value }] }))} placeholder="Product IDs (comma separated)" className={draftInput} />
-          )}
+      {selected && (
+        <div className="bg-[#111b21] border border-white/8 rounded-lg p-3">
+          <p className="text-white/30 text-[9px] uppercase tracking-wider mb-1">Preview</p>
+          <p className="text-white/60 text-[11px] leading-relaxed whitespace-pre-wrap">{selected.preview || '(no preview)'}</p>
         </div>
       )}
 
@@ -500,7 +447,7 @@ function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
       {err && <p className="text-red-400 text-[11px]">{err}</p>}
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-4 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/5 transition-all">Cancel</button>
-        <button onClick={save} disabled={loading || !name.trim() || !templateName}
+        <button onClick={save} disabled={loading || !name.trim() || !templateMessageId}
           className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs bg-purple-500 text-white font-medium hover:bg-purple-400 disabled:opacity-40 transition-all">
           {loading ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Save Template Draft
         </button>
@@ -511,7 +458,7 @@ function TemplateDraftForm({ templates, initial, onSave, onCancel, loading }: {
 
 function DraftsTab() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const [messages, setMessages] = useState<TemplateMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showTmplForm, setShowTmplForm] = useState(false);
@@ -520,13 +467,9 @@ function DraftsTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [dRes, tRes] = await Promise.all([fetch('/api/agent/drafts'), fetch('/api/templates')]);
+    const [dRes, mRes] = await Promise.all([fetch('/api/agent/drafts'), fetch('/api/template-messages')]);
     if (dRes.ok) setDrafts(await dRes.json());
-    if (tRes.ok) {
-      const t: Template[] = await tRes.json();
-      // Show all templates, approved first (only approved can actually be sent).
-      setTemplates([...t].sort((a, b) => (a.status === 'APPROVED' ? -1 : 1) - (b.status === 'APPROVED' ? -1 : 1)));
-    }
+    if (mRes.ok) setMessages(await mRes.json());
     setLoading(false);
   }, []);
 
@@ -572,7 +515,7 @@ function DraftsTab() {
       </div>
 
       {showForm && <DraftForm onSave={d => create({ ...d, kind: 'text' })} onCancel={() => setShowForm(false)} loading={saving} />}
-      {showTmplForm && <TemplateDraftForm templates={templates} onSave={d => create({ ...d, kind: 'template' })} onCancel={() => setShowTmplForm(false)} loading={saving} />}
+      {showTmplForm && <TemplateDraftForm messages={messages} onSave={d => create({ ...d, kind: 'template' })} onCancel={() => setShowTmplForm(false)} loading={saving} />}
 
       {loading ? (
         [...Array(2)].map((_, i) => <div key={i} className="h-20 bg-[#1f2c34] rounded-xl animate-pulse" />)
@@ -594,8 +537,8 @@ function DraftsTab() {
                 </div>
               ) : editId === d.id && isTemplate ? (
                 <div className="p-3">
-                  <TemplateDraftForm templates={templates}
-                    initial={{ name: d.name, triggerHint: d.triggerHint ?? '', templateName: d.templateName ?? '', templateConfig: d.templateConfig ?? {} }}
+                  <TemplateDraftForm messages={messages}
+                    initial={{ name: d.name, triggerHint: d.triggerHint ?? '', templateMessageId: d.templateMessageId ?? '' }}
                     onSave={data => update(d.id, { ...data, kind: 'template' })} onCancel={() => setEditId(null)} loading={saving} />
                 </div>
               ) : (
@@ -614,7 +557,12 @@ function DraftsTab() {
                         </p>
                       )}
                       {isTemplate
-                        ? <p className="text-white/40 text-[11px] mt-2">Sends template <strong className="text-white/60">{d.templateName}</strong>{d.templateConfig?.bodyParams?.length ? ` · ${d.templateConfig.bodyParams.length} param(s)` : ''}</p>
+                        ? (() => {
+                            const msg = messages.find(m => m.id === d.templateMessageId);
+                            return msg
+                              ? <p className="text-white/40 text-[11px] mt-2">Sends saved message <strong className="text-white/60">{msg.name}</strong> · template {msg.templateName}</p>
+                              : <p className="text-amber-400/70 text-[11px] mt-2">⚠ Linked saved message was deleted — pick another.</p>;
+                          })()
                         : <p className="text-white/40 text-[11px] mt-2 leading-relaxed line-clamp-3 whitespace-pre-wrap">{d.content}</p>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">

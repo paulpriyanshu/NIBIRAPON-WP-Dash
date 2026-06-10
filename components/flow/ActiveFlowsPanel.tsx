@@ -8,6 +8,7 @@ import {
   findRootNodes, getTemplate, flowParamSpecs, specNeedsConfig,
   type Flow as EngineFlow, type NodeParams, type TemplateParamSpec,
 } from '@/lib/flow-engine';
+import type { TemplateMessage, TemplateMessageConfig } from '@/lib/templates';
 
 interface Flow extends EngineFlow {
   _id: string;
@@ -29,7 +30,18 @@ function emptyParams(s: TemplateParamSpec, saved?: NodeParams): NodeParams {
   };
 }
 
-function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
+/** Map a saved template message's config into this node's NodeParams (config is NodeParams-shaped). */
+function paramsFromConfig(s: TemplateParamSpec, cfg: TemplateMessageConfig): NodeParams {
+  return {
+    bodyParams: Array.from({ length: s.bodyParams }, (_, i) => cfg.bodyParams?.[i] ?? ''),
+    headerParam: cfg.headerParam ?? '',
+    headerMediaUrl: cfg.headerMediaUrl ?? '',
+    thumbnailProductRetailerId: cfg.thumbnailProductRetailerId ?? '',
+    mpmSections: cfg.mpmSections?.length ? cfg.mpmSections : [{ title: '', productIds: '' }],
+  };
+}
+
+function FlowCard({ flow, onChanged, savedMessages }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[] }) {
   const roots = findRootNodes(flow);
   const specs = flowParamSpecs(flow);
   const isLive = flow.status === 'live';
@@ -216,6 +228,17 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
 
                     {!needs && <p className="text-white/30 text-[10px]">No parameters needed.</p>}
 
+                    {needs && (() => {
+                      const matches = savedMessages.filter(m => m.templateName === s.templateName);
+                      if (matches.length === 0) return null;
+                      return (
+                        <select value="" onChange={e => { const m = matches.find(x => x.id === e.target.value); if (m) patch(s.nodeId, () => paramsFromConfig(s, m.config)); }} className={`${inputCls} text-purple-200`}>
+                          <option value="">Prefill from a saved message…</option>
+                          {matches.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      );
+                    })()}
+
                     {Array.from({ length: s.headerTextParams }).map((_, i) => i === 0 && (
                       <input key="hdr" value={v.headerParam ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, headerParam: e.target.value }))}
                         placeholder="Header text {{1}}" className={inputCls} />
@@ -264,6 +287,7 @@ function FlowCard({ flow, onChanged }: { flow: Flow; onChanged: () => void }) {
 export default function ActiveFlowsPanel() {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -272,6 +296,9 @@ export default function ActiveFlowsPanel() {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    fetch('/api/template-messages').then(r => r.ok ? r.json() : []).then(setSavedMessages).catch(() => {});
+  }, []);
 
   const liveCount = flows.filter(f => f.status === 'live').length;
 
@@ -310,7 +337,7 @@ export default function ActiveFlowsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} />)}
+            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} />)}
           </div>
         )}
       </div>

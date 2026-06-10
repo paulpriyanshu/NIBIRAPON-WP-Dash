@@ -8,6 +8,7 @@ import {
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage, sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
+import { configToSendPayload } from '@/lib/templates';
 import { getSendUrl } from '@/lib/inventory-media';
 import { advanceRunOnButton } from '@/lib/flow-store';
 
@@ -470,27 +471,10 @@ async function agentReply({
   // ── 3. Saved template draft ───────────────────────────────────────────────
   if (template) {
     try {
-      const c = template.config || {};
-      let waRes: any;
-      if (c.isMPM && c.thumbnailProductRetailerId && c.mpmSections?.length) {
-        const sections = c.mpmSections
-          .map(s => ({
-            title: s.title?.trim() || 'Products',
-            product_items: (s.productIds ?? '').split(',').map((id: string) => ({ product_retailer_id: id.trim() })).filter((x: any) => x.product_retailer_id),
-          }))
-          .filter(s => s.product_items.length > 0);
-        waRes = await sendMPMTemplateMessage({
-          to: toPhone, templateName: template.name, language: template.language,
-          headerParam: c.headerParam || undefined, bodyParams: c.bodyParams ?? [],
-          thumbnailProductRetailerId: c.thumbnailProductRetailerId, sections,
-        });
-      } else {
-        waRes = await sendRichTemplateMessage({
-          to: toPhone, templateName: template.name, language: template.language,
-          bodyParams: c.bodyParams ?? [], headerParam: c.headerParam || undefined,
-          headerMediaUrl: c.headerMediaUrl || undefined, isCatalogTemplate: !!c.isCatalog,
-        });
-      }
+      const payload = configToSendPayload(toPhone, template.name, template.language, template.config || {});
+      const waRes = payload.kind === 'mpm'
+        ? await sendMPMTemplateMessage(payload.args)
+        : await sendRichTemplateMessage(payload.args);
       const waId = waRes?.messages?.[0]?.id;
       console.log(`[agent] ✓ template "${template.name}" send waId=${waId ?? 'local'}`);
       await db.insert(messages).values({

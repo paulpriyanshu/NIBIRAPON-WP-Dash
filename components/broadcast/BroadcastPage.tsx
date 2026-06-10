@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useAppDispatch, useAppSelector } from '@/hooks/redux';
 import { fetchTemplates } from '@/store/slices/templatesSlice';
 import { Template } from '@/types';
+import type { TemplateMessage } from '@/lib/templates';
 import {
   Send, ChevronRight, ChevronLeft, CheckCircle2, Clock, XCircle,
   Users, Layers, Sliders, Eye, History, Plus, Upload,
@@ -384,12 +385,16 @@ function StepTemplate({
   selected,
   onSelect,
   lockedMap,
+  savedMessages,
+  onUseSaved,
 }: {
   templates: Template[];
   loading: boolean;
   selected: Template | null;
   onSelect: (t: Template) => void;
   lockedMap: Record<string, string>;
+  savedMessages: TemplateMessage[];
+  onUseSaved: (m: TemplateMessage) => void;
 }) {
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('ALL');
@@ -409,6 +414,19 @@ function StepTemplate({
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-gray-100 dark:border-[#2a3942] space-y-3">
+        {savedMessages.length > 0 && (
+          <div className="flex items-center gap-2 bg-purple-50 dark:bg-purple-900/15 border border-purple-100 dark:border-purple-500/20 rounded-xl px-3 py-1.5">
+            <span className="text-[11px] font-medium text-purple-700 dark:text-purple-300 shrink-0">Start from a saved message</span>
+            <select
+              value=""
+              onChange={(e) => { const m = savedMessages.find((x) => x.id === e.target.value); if (m) onUseSaved(m); }}
+              className="flex-1 py-1.5 text-sm bg-transparent outline-none text-gray-700 dark:text-[#e9edef] cursor-pointer"
+            >
+              <option value="">Choose a fully-filled message…</option>
+              {savedMessages.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.templateName})</option>)}
+            </select>
+          </div>
+        )}
         <div className="flex items-center bg-gray-50 dark:bg-[#1f2c34] rounded-xl border border-gray-200 dark:border-[#2a3942] px-3 gap-2">
           <Layers size={14} className="text-gray-400 dark:text-[#667781]" />
           <input
@@ -1415,12 +1433,20 @@ export default function BroadcastPage() {
   const [templateStatsLoading, setTemplateStatsLoading] = useState(false);
   // templateName → live flow name, for templates locked from independent broadcast
   const [lockedMap, setLockedMap] = useState<Record<string, string>>({});
+  const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     dispatch(fetchTemplates());
   }, [dispatch]);
+
+  useEffect(() => {
+    fetch('/api/template-messages')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: TemplateMessage[]) => setSavedMessages(list))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch('/api/flows/locked-templates')
@@ -1503,6 +1529,44 @@ export default function BroadcastPage() {
     setCampaignName(`${data.name} (Copy)`);
     setMpmSections(data.mpmSections.length > 0 ? data.mpmSections : [{ title: '', productIds: '' }]);
     setThumbnailProductId(data.thumbnailProductRetailerId);
+    setLiveProgress(null);
+    setError('');
+    setStep(targetStep);
+    setTab('compose');
+  }, [templates]);
+
+  const applyFromTemplateMessage = useCallback((m: TemplateMessage) => {
+    const tpl = templates.find((t) => t.name === m.templateName) || null;
+    const cfg = m.config || {};
+
+    const paramMap: Record<string, string> = {};
+    (cfg.bodyParams || []).forEach((v, i) => { paramMap[`{{${i + 1}}}`] = v; });
+    if (cfg.headerParam && !paramMap['{{1}}']) paramMap['{{1}}'] = cfg.headerParam;
+
+    const restoredMpm: MPMSectionDraft[] =
+      cfg.mpmSections?.length
+        ? cfg.mpmSections.map((s) => ({ title: s.title || '', productIds: s.productIds || '' }))
+        : [{ title: '', productIds: '' }];
+
+    const isMPMTemplate = tpl ? checkIsMPM(tpl) : false;
+    const hasMPMData    = restoredMpm.some((s) => s.productIds.trim().length > 0);
+    const hasBodyData   = Object.values(paramMap).some((v) => v.trim().length > 0);
+    const tplBodyText   = tpl?.components.find((c) => c.type === 'BODY')?.text || '';
+    const needsBodyParams = /\{\{\d+\}\}/.test(tplBodyText);
+
+    let targetStep = 0;
+    if (tpl) {
+      if (isMPMTemplate && !hasMPMData) targetStep = 1;
+      else if (needsBodyParams && !hasBodyData) targetStep = 1;
+      else targetStep = 2; // params already filled from the saved message → pick recipients
+    }
+
+    setSelectedTemplate(tpl);
+    setParams(paramMap);
+    setHeaderMediaUrl(cfg.headerMediaUrl || '');
+    setThumbnailProductId(cfg.thumbnailProductRetailerId || '');
+    setMpmSections(restoredMpm);
+    setCampaignName(m.name);
     setLiveProgress(null);
     setError('');
     setStep(targetStep);
@@ -1863,7 +1927,7 @@ export default function BroadcastPage() {
                         <p className="text-xs text-gray-400 dark:text-[#667781]">Only approved templates can be used for broadcast</p>
                       </div>
                       <div className="flex-1 overflow-hidden">
-                        <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} lockedMap={lockedMap} onSelect={(t) => {
+                        <StepTemplate templates={templates} loading={templatesLoading} selected={selectedTemplate} lockedMap={lockedMap} savedMessages={savedMessages} onUseSaved={applyFromTemplateMessage} onSelect={(t) => {
                           if (t.id !== selectedTemplate?.id) {
                             setParams({});
                             setHeaderMediaUrl('');

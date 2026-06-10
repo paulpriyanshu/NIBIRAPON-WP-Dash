@@ -3,9 +3,11 @@ import { useEffect, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '@/hooks/redux';
 import { fetchTemplates } from '@/store/slices/templatesSlice';
 import { Template } from '@/types';
-import { CheckCircle2, Clock, XCircle, Plus, Send, X, Phone, AlertCircle, ShoppingBag, Trash2, GripVertical, Pencil, Info } from 'lucide-react';
+import { CheckCircle2, Clock, XCircle, Plus, Send, X, Phone, AlertCircle, ShoppingBag, Trash2, GripVertical, Pencil, Info, Layers, Copy } from 'lucide-react';
 import CreateTemplateModal from './CreateTemplateModal';
 import TemplateHistory from './templates/TemplateHistory';
+import TemplateMessageForm from './templates/TemplateMessageForm';
+import type { TemplateMessage } from '@/lib/templates';
 import { TemplateGridSkeleton } from '@/components/ui/Skeletons';
 
 const MAX_PRODUCTS = 30;
@@ -782,13 +784,105 @@ function isMPMTemplate(t: Template): boolean {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+// ─── Messages tab — saved, fully-parameterized template messages ───────────────
+
+function paramSummary(m: TemplateMessage): string {
+  const c = m.config || {};
+  const parts: string[] = [];
+  if (c.bodyParams?.length) parts.push(`${c.bodyParams.length} variable${c.bodyParams.length !== 1 ? 's' : ''}`);
+  const sections = (c.mpmSections ?? []).filter(s => s.productIds?.trim());
+  if (sections.length) {
+    const products = sections.reduce((n, s) => n + s.productIds.split(',').filter(x => x.trim()).length, 0);
+    parts.push(`${sections.length} section${sections.length !== 1 ? 's' : ''}`, `${products} product${products !== 1 ? 's' : ''}`);
+  }
+  if (c.headerMediaUrl) parts.push('media header');
+  return parts.join(' · ');
+}
+
+function MessagesTab({ templates }: { templates: Template[] }) {
+  const [msgs,     setMsgs]     = useState<TemplateMessage[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [editing,  setEditing]  = useState<TemplateMessage | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    const r = await fetch('/api/template-messages');
+    if (r.ok) setMsgs(await r.json());
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const duplicate = async (id: string) => { await fetch(`/api/template-messages/${id}`, { method: 'POST' }); load(); };
+  const remove    = async (id: string) => { if (!confirm('Delete this message?')) return; await fetch(`/api/template-messages/${id}`, { method: 'DELETE' }); load(); };
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      {(creating || editing) && (
+        <TemplateMessageForm
+          templates={templates}
+          initial={editing}
+          onClose={() => { setCreating(false); setEditing(null); }}
+          onSaved={() => { setCreating(false); setEditing(null); load(); }}
+        />
+      )}
+
+      <div className="bg-blue-50 dark:bg-[#0d2a1a] border border-blue-100 dark:border-[#2a3942] rounded-xl px-4 py-3 flex gap-2">
+        <Info size={14} className="text-blue-500 dark:text-wp-green shrink-0 mt-0.5" />
+        <p className="text-xs text-gray-600 dark:text-[#8696a0] leading-relaxed">
+          Compose a template message once — fill in every parameter (headings, variables, product sections). Saved messages can be reused in <strong>Broadcast</strong>, <strong>Flows</strong>, and by the <strong>Agent</strong>, and the agent can answer customer questions about what each one contains.
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500 dark:text-[#8696a0]">{msgs.length} saved message{msgs.length !== 1 ? 's' : ''}</p>
+        <button onClick={() => setCreating(true)} className="flex items-center gap-2 px-4 py-2 bg-wp-green text-white text-sm font-medium rounded-xl hover:bg-[#22c55e] transition-colors">
+          <Plus size={16} /> New Message
+        </button>
+      </div>
+
+      {loading ? (
+        [...Array(2)].map((_, i) => <div key={i} className="h-20 bg-gray-100 dark:bg-[#1f2c34] rounded-xl animate-pulse" />)
+      ) : msgs.length === 0 ? (
+        <div className="text-center py-16 text-gray-400 dark:text-[#667781]">
+          <Layers size={32} className="mx-auto mb-3 opacity-40" />
+          <p className="text-sm">No saved messages yet</p>
+          <p className="text-xs mt-1 opacity-70">Compose a fully-filled template and reuse it everywhere.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {msgs.map(m => (
+            <div key={m.id} className="bg-white dark:bg-[#111b21] border border-gray-100 dark:border-[#2a3942] rounded-xl p-4 flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-[#111b21] dark:text-[#e9edef] truncate">{m.name}</p>
+                  <span className="text-[9px] bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-300 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shrink-0">
+                    <Layers size={8} /> {m.templateName.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                {m.preview && <p className="text-[11px] text-gray-500 dark:text-[#8696a0] mt-1.5 leading-relaxed line-clamp-3 whitespace-pre-wrap">{m.preview}</p>}
+                {paramSummary(m) && <p className="text-[10px] text-gray-400 dark:text-[#667781] mt-1.5">{paramSummary(m)}</p>}
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => setEditing(m)} className="p-1.5 rounded-lg text-gray-400 hover:text-wp-dark dark:hover:text-wp-green hover:bg-gray-100 dark:hover:bg-[#1f2c34] transition-colors" title="Edit"><Pencil size={14} /></button>
+                <button onClick={() => duplicate(m.id)} className="p-1.5 rounded-lg text-gray-400 hover:text-wp-dark dark:hover:text-wp-green hover:bg-gray-100 dark:hover:bg-[#1f2c34] transition-colors" title="Duplicate"><Copy size={14} /></button>
+                <button onClick={() => remove(m.id)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title="Delete"><Trash2 size={14} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TemplatesPage() {
   const dispatch = useAppDispatch();
   const { templates, loading } = useAppSelector((s) => s.templates);
   const [activeTemplate,  setActiveTemplate]  = useState<Template | null>(null);
   const [editTemplate,    setEditTemplate]    = useState<Template | null>(null);
   const [showCreate,      setShowCreate]      = useState(false);
-  const [tab,             setTab]             = useState<'templates' | 'history'>('templates');
+  const [tab,             setTab]             = useState<'templates' | 'messages' | 'history'>('templates');
 
   useEffect(() => {
     dispatch(fetchTemplates());
@@ -834,10 +928,13 @@ export default function TemplatesPage() {
               Create Template
             </button>
           )}
+          {tab === 'messages' && (
+            <p className="text-xs text-gray-400 dark:text-[#667781] max-w-xs text-right">Reusable, fully-filled messages — synced to Broadcast, Flows &amp; Agent</p>
+          )}
         </div>
         {/* Tabs */}
         <div className="flex gap-1">
-          {(['templates', 'history'] as const).map((t) => (
+          {(['templates', 'messages', 'history'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -847,14 +944,16 @@ export default function TemplatesPage() {
                   : 'text-gray-500 dark:text-[#8696a0] hover:bg-gray-100 dark:hover:bg-[#2a3942]'
               }`}
             >
-              {t === 'templates' ? 'Templates' : 'Recents'}
+              {t === 'templates' ? 'Templates' : t === 'messages' ? 'Messages' : 'Recents'}
             </button>
           ))}
         </div>
       </div>
 
       <div className="p-6">
-        {tab === 'history' ? (
+        {tab === 'messages' ? (
+          <MessagesTab templates={templates} />
+        ) : tab === 'history' ? (
           <TemplateHistory />
         ) : loading ? (
           <TemplateGridSkeleton count={6} />

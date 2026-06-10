@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
-import { agentSettings, catalogProducts, agentDrafts, type ProductMedia, type DraftTemplateConfig } from '@/db/schema';
+import { agentSettings, catalogProducts, type ProductMedia } from '@/db/schema';
 import { eq, and, isNotNull } from 'drizzle-orm';
+import { agentDraftsColl, templateMessagesColl, toObjectId } from '@/lib/template-store';
+import type { TemplateMessageConfig } from '@/lib/templates';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
 
@@ -13,7 +15,18 @@ export interface AgentListOut {
   body: string; button: string; header?: string;
   sections: { title?: string; rows: { id: string; title: string; description?: string }[] }[];
 }
-export interface AgentTemplateOut { name: string; language: string; config: DraftTemplateConfig; }
+export interface AgentTemplateOut { name: string; language: string; config: TemplateMessageConfig; }
+
+/** A template draft resolved against its saved template message, ready for the prompt + send. */
+interface ResolvedTemplateDraft {
+  id: string;
+  name: string;
+  triggerHint: string | null;
+  templateName: string;
+  language: string;
+  config: TemplateMessageConfig;
+  preview: string;
+}
 export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; shouldRespond: boolean; }
 
 type ProductRow = typeof catalogProducts.$inferSelect;
@@ -86,8 +99,6 @@ function formatCatalogContext(products: ProductRow[]): string {
 
 // ── Fetch agent settings + drafts ────────────────────────────────────────────
 
-type DraftRow = typeof agentDrafts.$inferSelect;
-
 async function getContextData(userMessage: string): Promise<{
   settingsPrompt: string;
   agentName: string;
@@ -96,11 +107,11 @@ async function getContextData(userMessage: string): Promise<{
   catalogContext: string;
   draftsContext: string;
   templateDraftsContext: string;
-  templateDrafts: DraftRow[];
+  templateDrafts: ResolvedTemplateDraft[];
 }> {
-  const [settingsRow, drafts, products, allInContext] = await Promise.all([
+  const [settingsRow, draftDocs, products, allInContext] = await Promise.all([
     db.select().from(agentSettings).limit(1).then(r => r[0]),
-    db.select().from(agentDrafts).where(eq(agentDrafts.isActive, true)),
+    agentDraftsColl().then(c => c.find({ isActive: true }).toArray()).catch(() => []),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
     db.select({ category: catalogProducts.category })
       .from(catalogProducts)
@@ -112,13 +123,46 @@ async function getContextData(userMessage: string): Promise<{
   const settingsPrompt = settingsRow?.systemPrompt ?? '';
   const categories     = [...new Set(allInContext.map(p => p.category).filter((c): c is string => !!c))];
 
-  const textDrafts     = drafts.filter(d => d.kind !== 'template');
-  const templateDrafts = drafts.filter(d => d.kind === 'template' && d.templateName);
+  const textDraftDocs = draftDocs.filter(d => d.kind !== 'template');
+  const tmplDraftDocs = draftDocs.filter(d => d.kind === 'template' && d.templateMessageId);
+
+  // Resolve each template draft against its saved template message (single source of truth).
+  const objIds = tmplDraftDocs
+    .map(d => toObjectId(d.templateMessageId!))
+    .filter((x): x is NonNullable<typeof x> => !!x);
+  const msgsById = new Map<string, { templateName: string; language: string; config: TemplateMessageConfig; preview: string }>();
+  if (objIds.length > 0) {
+    const msgs = await (await templateMessagesColl()).find({ _id: { $in: objIds } }).toArray().catch(() => []);
+    for (const m of msgs) {
+      msgsById.set(m._id.toString(), {
+        templateName: m.templateName,
+        language: m.language || 'en',
+        config: (m.config ?? {}) as TemplateMessageConfig,
+        preview: m.preview ?? '',
+      });
+    }
+  }
+
+  const templateDrafts: ResolvedTemplateDraft[] = tmplDraftDocs
+    .map(d => {
+      const m = msgsById.get(d.templateMessageId!);
+      if (!m) return null;
+      return {
+        id:           d._id.toString(),
+        name:         d.name,
+        triggerHint:  d.triggerHint ?? null,
+        templateName: m.templateName,
+        language:     m.language,
+        config:       m.config,
+        preview:      m.preview,
+      };
+    })
+    .filter((x): x is ResolvedTemplateDraft => !!x);
 
   let draftsContext = '';
-  if (textDrafts.length > 0) {
-    const list = textDrafts
-      .map(d => `### ${d.name}${d.triggerHint ? ` (send ${d.triggerHint})` : ''}\n${d.content}`)
+  if (textDraftDocs.length > 0) {
+    const list = textDraftDocs
+      .map(d => `### ${d.name}${d.triggerHint ? ` (send ${d.triggerHint})` : ''}\n${d.content ?? ''}`)
       .join('\n\n');
     draftsContext = `## Pre-written messages you can send verbatim:\n${list}`;
   }
@@ -126,9 +170,15 @@ async function getContextData(userMessage: string): Promise<{
   let templateDraftsContext = '';
   if (templateDrafts.length > 0) {
     const list = templateDrafts
-      .map(d => `- [template draft id: ${d.id}] "${d.name}" — sends the "${d.templateName}" template. Send when: ${d.triggerHint || 'it fits the situation'}.`)
+      .map(d => {
+        const head = `- [template draft id: ${d.id}] "${d.name}" — sends the "${d.templateName}" template. Send when: ${d.triggerHint || 'it fits the situation'}.`;
+        const body = d.preview
+          ? `\n  This template contains:\n${d.preview.split('\n').map(l => `    ${l}`).join('\n')}`
+          : '';
+        return head + body;
+      })
       .join('\n');
-    templateDraftsContext = `## Templates you can send (call send_template_draft with the id):\n${list}`;
+    templateDraftsContext = `## Templates you can send (call send_template_draft with the id). You may also answer customer questions about what a template contains, using the contents shown below:\n${list}`;
   }
 
   return {
@@ -325,8 +375,8 @@ export async function runAgent(
     let template: AgentTemplateOut | undefined;
     if (draftId) {
       const d = templateDrafts.find(x => x.id === draftId);
-      if (d?.templateName) {
-        template = { name: d.templateName, language: d.language || 'en', config: (d.templateConfig ?? {}) as DraftTemplateConfig };
+      if (d) {
+        template = { name: d.templateName, language: d.language, config: d.config };
       }
     }
 
