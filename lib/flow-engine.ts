@@ -60,6 +60,24 @@ export function templateSendInfo(node: FlowNode | undefined): { name: string; la
   return { name: t.name, language: t.language || 'en' };
 }
 
+/** The custom text a textNode sends, if any. */
+export function textNodeContent(node: FlowNode | undefined): string | null {
+  if (!node || node.type !== 'textNode') return null;
+  const c = (node.data as { content?: string } | undefined)?.content;
+  return typeof c === 'string' ? c : null;
+}
+
+/** A short label for a textNode (its name), for logs/inbox. */
+export function textNodeLabel(node: FlowNode | undefined): string {
+  const name = (node?.data as { name?: string } | undefined)?.name;
+  return name?.trim() || 'Message';
+}
+
+/** Whether a node sends something when the flow reaches it (template or text). */
+export function isSendableNode(node: FlowNode | undefined): boolean {
+  return node?.type === 'templateNode' || node?.type === 'textNode';
+}
+
 /** Whether a template is a multi-product (MPM) or catalog template. */
 export function templateKindFlags(t: Template): { isMPM: boolean; isCatalog: boolean } {
   const buttons = t.components.find(c => c.type === 'BUTTONS')?.buttons ?? [];
@@ -140,13 +158,13 @@ export function compileFlow(flow: Flow): CompiledFlow {
   for (const n of flow.nodes ?? []) nodesById[n.id] = n;
   const edges = flow.edges ?? [];
 
-  // Follow pass-through nodes until we reach a template (best effort).
+  // Follow pass-through nodes until we reach a sendable node (template or text).
   const resolveToTemplate = (nodeId: string, seen = new Set<string>()): string | null => {
     if (seen.has(nodeId)) return null;
     seen.add(nodeId);
     const n = nodesById[nodeId];
     if (!n) return null;
-    if (n.type === 'templateNode') return nodeId;
+    if (n.type === 'templateNode' || n.type === 'textNode') return nodeId;
     if (n.type === 'conditionNode') {
       const out = edges.find(e => e.source === nodeId);
       return out ? resolveToTemplate(out.target, seen) : null;
@@ -156,8 +174,9 @@ export function compileFlow(flow: Flow): CompiledFlow {
 
   const transitions: CompiledFlow['transitions'] = {};
 
+  // Template nodes branch on buttons; text nodes just flow on to their next node.
   for (const node of flow.nodes ?? []) {
-    if (node.type !== 'templateNode') continue;
+    if (node.type !== 'templateNode' && node.type !== 'textNode') continue;
     const buttons = quickReplyButtons(node);
     const entry: CompiledFlow['transitions'][string] = { buttons: {}, default: null };
 

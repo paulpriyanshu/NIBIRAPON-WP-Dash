@@ -3,10 +3,11 @@ import getMongoClient from '@/lib/mongodb';
 import { db } from '@/db';
 import { messages, conversations } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
+import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage } from '@/lib/whatsapp-api';
 import {
   compileFlow, resolveNext, hasOnward, delayAfter, quickReplyButtons,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
+  textNodeContent, textNodeLabel, isSendableNode,
   type Flow, type FlowButton, type FlowNode, type CompiledFlow,
 } from '@/lib/flow-engine';
 import { configToSendPayload } from '@/lib/templates';
@@ -26,6 +27,31 @@ async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise
     ? await sendMPMTemplateMessage(payload.args)
     : await sendRichTemplateMessage(payload.args);
   return res?.messages?.[0]?.id;
+}
+
+/** What a sent flow node produced — used for persistence/logging. */
+interface SentNode { msgId?: string; label: string; isTemplate: boolean; text?: string }
+
+/**
+ * Send whatever a flow node represents — a WhatsApp template or a custom text
+ * message — and return its wamid + a label. Returns null for non-sendable nodes.
+ */
+async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<SentNode | null> {
+  const node = flow.nodes.find(n => n.id === nodeId) as FlowNode | undefined;
+  if (!isSendableNode(node)) return null;
+
+  if (node!.type === 'textNode') {
+    const text = (textNodeContent(node) ?? '').trim();
+    const label = textNodeLabel(node);
+    if (!text) { console.warn(`[flow] text node ${nodeId} ("${label}") is empty — skipping send`); return { label, isTemplate: false, text: '' }; }
+    const res = await sendTextMessage({ to, text });
+    return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text };
+  }
+
+  const info = templateSendInfo(node);
+  if (!info) return null;
+  const msgId = await sendNodeTemplate(flow, nodeId, to);
+  return { msgId, label: info.name, isTemplate: true };
 }
 
 const DB    = 'nibiraponcollections';
@@ -63,79 +89,90 @@ export interface FlowRun {
   dueNodeId?: string | null;
 }
 
-/** Compute the dueAt/dueNodeId fields for a node that was just sent. */
-function delayFields(compiled: CompiledFlow, nodeId: string): { dueAt: Date | null; dueNodeId: string | null } {
-  const d = delayAfter(compiled, nodeId);
-  return d ? { dueAt: new Date(Date.now() + d.seconds * 1000), dueNodeId: d.nextId } : { dueAt: null, dueNodeId: null };
-}
-
 // Short delays run inline (setTimeout) for precise timing; longer ones are left
 // to the cron tick so we don't block the request for too long.
 const INLINE_DELAY_CAP_SEC = 45;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /**
- * After a template was sent, honour its Delay node: wait the configured seconds
- * then send the next template — chaining further short delays. Aborts if the
- * customer advances the run (e.g. taps a button) during the wait.
+ * The next step the flow takes on its own, without a customer tap:
+ *  - a Delay node after a template → wait N seconds, then send the target
+ *  - a text node → it sends, then flows straight on to its next node (0 wait)
+ * Returns null when the flow should wait for a button tap (or has ended).
  */
-async function runDelayChain(args: {
+function nextAutoStep(compiled: CompiledFlow, nodeId: string): { seconds: number; nextId: string } | null {
+  const d = delayAfter(compiled, nodeId);
+  if (d) return d;
+  const node = compiled.nodesById[nodeId];
+  if (node?.type === 'textNode') {
+    const def = compiled.transitions[nodeId]?.default;
+    if (def) return { seconds: 0, nextId: def };
+  }
+  return null;
+}
+
+/**
+ * After a node was sent, run the flow's automatic steps: Delay-node waits and
+ * text-message nodes (which fire and immediately continue). Chains until it
+ * reaches a template that waits for a tap, a long delay (handed to cron), or the
+ * end. Aborts if the customer advances the run (taps a button) during a wait.
+ */
+async function runAutoChain(args: {
   flow: Flow; compiled: CompiledFlow; runId: ObjectId; phone: string;
   conversationId: string | null; bizPhone: string; fromNodeId: string;
 }): Promise<void> {
   const runs = await runsColl();
   let current = args.fromNodeId;
 
-  for (let guard = 0; guard < 25; guard++) {
-    const d = delayAfter(args.compiled, current);
-    if (!d) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
+  for (let guard = 0; guard < 50; guard++) {
+    const step = nextAutoStep(args.compiled, current);
+    if (!step) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
 
-    if (d.seconds > INLINE_DELAY_CAP_SEC) {
+    if (step.seconds > INLINE_DELAY_CAP_SEC) {
       // Too long to hold the request — hand off to the cron tick.
-      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: new Date(Date.now() + d.seconds * 1000), dueNodeId: d.nextId } });
+      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: new Date(Date.now() + step.seconds * 1000), dueNodeId: step.nextId } });
       return;
     }
 
-    await sleep(d.seconds * 1000);
+    if (step.seconds > 0) await sleep(step.seconds * 1000);
 
     // If the customer moved the run on (tapped a button) while we waited, stop.
     const fresh = await runs.findOne({ _id: args.runId });
     if (!fresh || fresh.status !== 'active' || fresh.currentNodeId !== current) return;
 
-    const node = args.compiled.nodesById[d.nextId];
-    const info = templateSendInfo(node);
-    if (!info) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
-
-    let waId: string | undefined;
+    let sent: SentNode | null;
     try {
-      waId = await sendNodeTemplate(args.flow, d.nextId, args.phone);
-      console.log(`[flow] delay (${d.seconds}s) fired → sent "${info.name}" to ${args.phone} waId=${waId ?? 'none'}`);
+      sent = await sendFlowNode(args.flow, step.nextId, args.phone);
+      console.log(`[flow] auto-step (${step.seconds}s) fired → sent "${sent?.label ?? '?'}" to ${args.phone} waId=${sent?.msgId ?? 'none'}`);
     } catch (e) {
-      console.error(`[flow] inline delay send failed for "${info.name}":`, e instanceof Error ? e.message : e);
+      console.error(`[flow] auto-step send failed:`, e instanceof Error ? e.message : e);
       await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } });
       return;
     }
+    if (!sent) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
 
-    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const node = args.compiled.nodesById[step.nextId];
+    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     await persistFlowMessage({
-      msgId, conversationId: args.conversationId, bizPhone: args.bizPhone,
-      phone: args.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+      msgId, conversationId: args.conversationId, bizPhone: args.bizPhone, phone: args.phone,
+      status: sent.msgId ? 'sent' : 'failed',
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
     });
 
-    const terminal = !hasOnward(args.compiled, d.nextId);
+    const terminal = !hasOnward(args.compiled, step.nextId);
     await runs.updateOne(
       { _id: args.runId },
       {
         $set: {
-          currentNodeId: d.nextId, currentButtons: quickReplyButtons(node),
+          currentNodeId: step.nextId, currentButtons: quickReplyButtons(node),
           lastTemplateMsgId: msgId, status: terminal ? 'completed' : 'active',
           updatedAt: new Date(), dueAt: null, dueNodeId: null,
         },
-        $push: { steps: { at: new Date(), button: '(delay)', toNode: d.nextId } },
+        $push: { steps: { at: new Date(), button: step.seconds > 0 ? '(delay)' : '(message)', toNode: step.nextId } },
       },
     );
     if (terminal) return;
-    current = d.nextId;
+    current = step.nextId;
   }
 }
 
@@ -166,17 +203,20 @@ export async function isTemplateLocked(templateName: string): Promise<{ flowName
 
 async function persistFlowMessage(opts: {
   msgId: string; conversationId: string | null; bizPhone: string; phone: string;
-  templateName: string; status: 'sent' | 'failed';
+  status: 'sent' | 'failed';
+  // A template send (default) or a custom text message.
+  templateName?: string; text?: string; kind?: 'template' | 'text';
 }) {
   if (!opts.conversationId) return;
+  const isText = opts.kind === 'text';
   await db.insert(messages).values({
     id:            opts.msgId,
     conversationId: opts.conversationId,
     fromNumber:    opts.bizPhone,
     toNumber:      opts.phone,
-    type:          'template',
-    templateName:  opts.templateName,
-    text:          `[Flow] ${opts.templateName}`,
+    type:          isText ? 'text' : 'template',
+    templateName:  isText ? null : (opts.templateName ?? null),
+    text:          isText ? (opts.text ?? '') : `[Flow] ${opts.templateName ?? ''}`,
     status:        opts.status,
     isOutgoing:    true,
     sentBy:        'flow',
@@ -212,7 +252,7 @@ export async function startRun(opts: {
   const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   await persistFlowMessage({
     msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone,
-    phone: opts.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+    phone: opts.phone, templateName: info.name, kind: 'template', status: waId ? 'sent' : 'failed',
   });
 
   const runs = await runsColl();
@@ -242,8 +282,8 @@ export async function startRun(opts: {
   } satisfies Omit<FlowRun, '_id'>);
   console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(quickReplyButtons(rootNode))}`);
 
-  // Honour a Delay node right after the root (setTimeout for short waits).
-  await runDelayChain({
+  // Honour any auto-steps right after the root (Delay waits / text messages).
+  await runAutoChain({
     flow: opts.flow, compiled, runId: ins.insertedId, phone: opts.phone,
     conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: opts.rootNodeId,
   });
@@ -292,22 +332,22 @@ export async function advanceRunOnButton(opts: {
     if (!nextId) continue;
 
     const nextNode = compiled.nodesById[nextId];
-    const info = templateSendInfo(nextNode);
-    if (!info) continue;
 
-    let waId: string | undefined;
+    let sent: SentNode | null;
     try {
-      waId = await sendNodeTemplate(flow as unknown as Flow, nextId, opts.phone);
-      console.log(`[flow] sent next template "${info.name}" → waId=${waId ?? 'none'}`);
+      sent = await sendFlowNode(flow as unknown as Flow, nextId, opts.phone);
+      console.log(`[flow] sent next "${sent?.label ?? '?'}" → waId=${sent?.msgId ?? 'none'}`);
     } catch (e) {
-      console.error(`[flow] advance send failed for template "${info.name}":`, e instanceof Error ? e.message : e);
+      console.error(`[flow] advance send failed:`, e instanceof Error ? e.message : e);
       return false;
     }
+    if (!sent) continue;
 
-    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     await persistFlowMessage({
-      msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone,
-      phone: opts.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+      msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone, phone: opts.phone,
+      status: sent.msgId ? 'sent' : 'failed',
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
     });
 
     const terminal = !hasOnward(compiled, nextId);
@@ -327,9 +367,9 @@ export async function advanceRunOnButton(opts: {
       },
     );
 
-    // Honour a Delay node after this template (setTimeout for short waits).
+    // Continue any automatic steps after this node (Delay waits / text messages).
     if (!terminal) {
-      await runDelayChain({
+      await runAutoChain({
         flow: flow as unknown as Flow, compiled, runId: run._id, phone: opts.phone,
         conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: nextId,
       });
@@ -364,28 +404,27 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
 
     const compiled = compileFlow(flow as unknown as Flow);
     const node = compiled.nodesById[nodeId];
-    const info = templateSendInfo(node);
-    if (!info) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
 
-    let waId: string | undefined;
+    let sent: SentNode | null;
     try {
-      waId = await sendNodeTemplate(flow as unknown as Flow, nodeId, run.phone);
-      console.log(`[flow] delay fired → sent "${info.name}" to ${run.phone} waId=${waId ?? 'none'}`);
+      sent = await sendFlowNode(flow as unknown as Flow, nodeId, run.phone);
+      console.log(`[flow] delay fired → sent "${sent?.label ?? '?'}" to ${run.phone} waId=${sent?.msgId ?? 'none'}`);
     } catch (e) {
-      console.error(`[flow] delay send failed for "${info.name}":`, e instanceof Error ? e.message : e);
-      // Clear the schedule so we don't hot-loop on a broken template.
+      console.error(`[flow] delay send failed:`, e instanceof Error ? e.message : e);
+      // Clear the schedule so we don't hot-loop on a broken node.
       await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } });
       continue;
     }
+    if (!sent) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
 
-    const msgId = waId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     await persistFlowMessage({
-      msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID,
-      phone: run.phone, templateName: info.name, status: waId ? 'sent' : 'failed',
+      msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, phone: run.phone,
+      status: sent.msgId ? 'sent' : 'failed',
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
     });
 
     const terminal = !hasOnward(compiled, nodeId);
-    const next = delayFields(compiled, nodeId);
     await runs.updateOne(
       { _id: run._id },
       {
@@ -395,13 +434,21 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
           lastTemplateMsgId: msgId,
           status:            terminal ? 'completed' : 'active',
           updatedAt:         new Date(),
-          dueAt:             next.dueAt,
-          dueNodeId:         next.dueNodeId,
+          dueAt:             null,
+          dueNodeId:         null,
         },
         $push: { steps: { at: new Date(), button: '(delay)', toNode: nodeId } },
       },
     );
     fired++;
+
+    // Continue any further automatic steps (chained delays / text messages).
+    if (!terminal) {
+      await runAutoChain({
+        flow: flow as unknown as Flow, compiled, runId: run._id, phone: run.phone,
+        conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, fromNodeId: nodeId,
+      });
+    }
   }
 
   return { fired };

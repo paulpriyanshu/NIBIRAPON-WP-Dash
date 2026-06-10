@@ -25,10 +25,11 @@ import ConditionNode       from './ConditionNode';
 import BinaryDecisionNode  from './BinaryDecisionNode';
 import MultiConditionNode  from './MultiConditionNode';
 import DelayNode           from './DelayNode';
+import TextNode            from './TextNode';
 import DeletableEdge       from './DeletableEdge';
 import {
   Search, Layers, GitBranch, Trash2, Info, GripVertical,
-  Filter, Network, Save, Check, Loader2,
+  Filter, Network, Save, Check, Loader2, MessageSquare,
   ChevronLeft, ChevronRight, Clock, X, BookOpen,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -53,6 +54,7 @@ const nodeTypes = {
   binaryDecisionNode: BinaryDecisionNode,
   multiConditionNode: MultiConditionNode,
   delayNode:          DelayNode,
+  textNode:           TextNode,
 };
 
 const edgeTypes = { deletableEdge: DeletableEdge };
@@ -99,6 +101,13 @@ const TOOLBAR_NODES = [
     icon: Clock,
     palette: { bg: 'bg-teal-500/10', border: 'border-teal-500/25', hover: 'hover:bg-teal-500/20 hover:border-teal-500/50', text: 'text-teal-300' },
   },
+  {
+    type: 'textNode',
+    label: 'Message',
+    hint: 'Send a custom text message, then continue to the next node (no tap needed)',
+    icon: MessageSquare,
+    palette: { bg: 'bg-indigo-500/10', border: 'border-indigo-500/25', hover: 'hover:bg-indigo-500/20 hover:border-indigo-500/50', text: 'text-indigo-300' },
+  },
 ] as const;
 
 const NODE_DEFAULT_DATA: Record<string, object> = {
@@ -106,6 +115,7 @@ const NODE_DEFAULT_DATA: Record<string, object> = {
   binaryDecisionNode: { condition: '' },
   multiConditionNode: { branches: [{ id: 'b1', label: 'Branch 1' }, { id: 'b2', label: 'Branch 2' }] },
   delayNode:          { seconds: 5 },
+  textNode:           { name: 'Message', content: '' },
 };
 
 /* ── adaptive grid (zoom-invariant) ─────────────────────────────── */
@@ -192,6 +202,31 @@ function DraggableTemplateCard({ template }: { template: Template }) {
   );
 }
 
+interface TextDraft { id: string; name: string; content: string }
+
+function DraggableTextDraftCard({ draft }: { draft: TextDraft }) {
+  const onDragStart = (e: DragEvent<HTMLDivElement>) => {
+    e.dataTransfer.setData('application/text-draft', JSON.stringify({ name: draft.name, content: draft.content }));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  return (
+    <div draggable onDragStart={onDragStart}
+      className="group bg-[#1f2c34] border border-indigo-400/15 rounded-xl p-3 cursor-grab active:cursor-grabbing active:scale-[0.98] active:opacity-70 hover:border-indigo-400/40 transition-all duration-150 select-none"
+    >
+      <div className="flex items-start gap-2">
+        <GripVertical size={12} className="text-white/20 mt-0.5 shrink-0" />
+        <div className="w-6 h-6 bg-indigo-500/15 rounded-md flex items-center justify-center shrink-0 mt-0.5">
+          <MessageSquare size={11} className="text-indigo-300" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-white text-[11px] font-medium truncate leading-snug">{draft.name}</p>
+          {draft.content && <p className="text-white/35 text-[9px] mt-0.5 line-clamp-2 leading-relaxed">{draft.content}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── main ───────────────────────────────────────────────────────── */
 
 export default function FlowBuilderPage() {
@@ -203,6 +238,7 @@ export default function FlowBuilderPage() {
   const [rfInstance, setRfInstance]      = useState<ReactFlowInstance | null>(null);
   const [search, setSearch]              = useState('');
   const [activeCat, setActiveCat]        = useState<string | null>(null);
+  const [textDrafts, setTextDrafts]      = useState<TextDraft[]>([]);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   /* save state */
@@ -231,6 +267,15 @@ export default function FlowBuilderPage() {
   useEffect(() => { latestEdges.current    = edges;    }, [edges]);
 
   useEffect(() => { dispatch(fetchTemplates()); }, [dispatch]);
+
+  // The agent's custom text drafts — draggable into the flow as Message nodes.
+  useEffect(() => {
+    fetch('/api/agent/drafts')
+      .then(r => r.ok ? r.json() : [])
+      .then((rows: { id: string; kind?: string; name: string; content?: string }[]) =>
+        setTextDrafts(rows.filter(d => d.kind !== 'template').map(d => ({ id: d.id, name: d.name, content: d.content ?? '' }))))
+      .catch(() => {});
+  }, []);
 
   /* fetch saved flows */
   const loadSavedFlows = useCallback(async () => {
@@ -362,6 +407,7 @@ export default function FlowBuilderPage() {
     e.preventDefault();
     if (!rfInstance) return;
     const rawTemplate = e.dataTransfer.getData('application/template');
+    const rawTextDraft = e.dataTransfer.getData('application/text-draft');
     const nodeType    = e.dataTransfer.getData('application/node-type');
     const position    = rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
     const centred     = { x: position.x - 130, y: position.y - 70 };
@@ -370,6 +416,11 @@ export default function FlowBuilderPage() {
       setNodes(nds => nds.concat({
         id: `tmpl-${Date.now()}`, type: 'templateNode',
         position: centred, data: { template: JSON.parse(rawTemplate) },
+      }));
+    } else if (rawTextDraft) {
+      setNodes(nds => nds.concat({
+        id: `textNode-${Date.now()}`, type: 'textNode',
+        position: centred, data: { ...JSON.parse(rawTextDraft) },
       }));
     } else if (nodeType && nodeType in NODE_DEFAULT_DATA) {
       const nodeId = `${nodeType}-${Date.now()}`;
@@ -477,9 +528,22 @@ export default function FlowBuilderPage() {
         <div className="mx-4 my-2.5 bg-[#25D366]/5 border border-[#25D366]/10 rounded-lg px-3 py-2 flex gap-2 items-start shrink-0">
           <Info size={11} className="text-[#25D366]/50 shrink-0 mt-0.5" />
           <p className="text-[#25D366]/60 text-[9px] leading-relaxed">
-            Drag templates → canvas. Use toolbar nodes for conditions &amp; branching. Click edge then press Delete to remove it.
+            Drag templates or your saved messages → canvas. Use toolbar nodes for conditions, delays &amp; messages. Click edge then press Delete to remove it.
           </p>
         </div>
+
+        {textDrafts.length > 0 && (
+          <div className="px-3 pb-2 shrink-0">
+            <div className="flex items-center gap-1.5 px-1 mb-1.5">
+              <MessageSquare size={10} className="text-indigo-300" />
+              <span className="text-indigo-200/70 text-[10px] font-semibold uppercase tracking-wide">Your messages</span>
+            </div>
+            <div className="space-y-2 max-h-44 overflow-y-auto pr-0.5">
+              {textDrafts.map(d => <DraggableTextDraftCard key={d.id} draft={d} />)}
+            </div>
+            <div className="border-b border-white/8 mt-3" />
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2 min-h-0">
           {tmplLoading ? (
