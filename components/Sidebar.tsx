@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell, Users, LogOut, GitBranch, Bot, Package } from 'lucide-react';
+import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell, Users, LogOut, GitBranch, Bot, Package, Sparkles, Images } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
 import { useEffect, useState } from 'react';
 
@@ -13,7 +13,9 @@ const NAV = [
   { href: '/templates', label: 'Templates', icon: Layers },
   { href: '/flow',      label: 'Flow',      icon: GitBranch },
   { href: '/agent',     label: 'Agent',     icon: Bot },
+  { href: '/manager',   label: 'AI Chat',   icon: Sparkles },
   { href: '/inventory', label: 'Inventory', icon: Package },
+  { href: '/media',     label: 'Media',     icon: Images },
   { href: '/analytics', label: 'Analytics', icon: BarChart2 },
   { href: '/settings',  label: 'Settings',  icon: Settings },
 ];

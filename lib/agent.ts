@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
-import { agentSettings, catalogProducts, type ProductMedia } from '@/db/schema';
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
+import { eq, and, isNotNull, asc } from 'drizzle-orm';
 import { agentDraftsColl, templateMessagesColl, toObjectId } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 
@@ -14,6 +14,16 @@ export interface AgentMediaOut { type: 'image' | 'video'; url?: string; assetId?
 export interface AgentListOut {
   body: string; button: string; header?: string;
   sections: { title?: string; rows: { id: string; title: string; description?: string }[] }[];
+  // Category images sent before the tappable list so the customer sees visuals first.
+  media?: AgentMediaOut[];
+}
+
+/** A product category exposed to the agent, with its image for visual browsing. */
+interface AgentCategory {
+  name: string;
+  description: string | null;
+  imageUrl: string | null;
+  imageAssetId: string | null;
 }
 export interface AgentTemplateOut { name: string; language: string; config: TemplateMessageConfig; }
 
@@ -103,25 +113,31 @@ async function getContextData(userMessage: string): Promise<{
   settingsPrompt: string;
   agentName: string;
   products: ProductRow[];
-  categories: string[];
+  categories: AgentCategory[];
   catalogContext: string;
   draftsContext: string;
   templateDraftsContext: string;
   templateDrafts: ResolvedTemplateDraft[];
 }> {
-  const [settingsRow, draftDocs, products, allInContext] = await Promise.all([
+  const [settingsRow, draftDocs, products, categoryRows] = await Promise.all([
     db.select().from(agentSettings).limit(1).then(r => r[0]),
     agentDraftsColl().then(c => c.find({ isActive: true }).toArray()).catch(() => []),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
-    db.select({ category: catalogProducts.category })
-      .from(catalogProducts)
-      .where(and(eq(catalogProducts.inAgentContext, true), eq(catalogProducts.isActive, true)))
-      .catch(() => [] as { category: string | null }[]),
+    db.select({
+        name:         categoriesTable.name,
+        description:  categoriesTable.description,
+        imageUrl:     categoriesTable.imageUrl,
+        imageAssetId: categoriesTable.imageAssetId,
+      })
+      .from(categoriesTable)
+      .where(eq(categoriesTable.inAgentContext, true))
+      .orderBy(asc(categoriesTable.sortOrder), asc(categoriesTable.name))
+      .catch(() => [] as AgentCategory[]),
   ]);
 
   const agentName      = settingsRow?.agentName    ?? 'Riya';
   const settingsPrompt = settingsRow?.systemPrompt ?? '';
-  const categories     = [...new Set(allInContext.map(p => p.category).filter((c): c is string => !!c))];
+  const categories: AgentCategory[] = categoryRows;
 
   const textDraftDocs = draftDocs.filter(d => d.kind !== 'template');
   const tmplDraftDocs = draftDocs.filter(d => d.kind === 'template' && d.templateMessageId);
@@ -195,7 +211,10 @@ async function getContextData(userMessage: string): Promise<{
 
 // ── Base system prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, extra: string, categories: string[]): string {
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, extra: string, categories: AgentCategory[]): string {
+  const categoryLine = categories.length
+    ? categories.map(c => c.name + (c.imageUrl || c.imageAssetId ? ' 🖼️' : '')).join(', ')
+    : '(none configured)';
   return `
 You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion.
 
@@ -222,8 +241,9 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 - Only use ids that appear in the catalog section. Never invent ids. If no product is relevant, just reply with text and don't call the tool.
 
 ## Sending a category list
-- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. A tappable WhatsApp list of our categories is sent so they can pick one. When they pick a category, show that category's products.
-- Available categories: ${categories.length ? categories.join(', ') : '(none configured)'}.
+- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. The categories that have an image (marked 🖼️ below) are sent as photos first, then a tappable WhatsApp list so they can pick one. When they pick a category, show that category's products.
+- Lean on these category visuals when helping a customer browse — they make your messages richer.
+- Available categories: ${categoryLine}.
 
 ## Sending a saved template
 - When the situation matches a template's "Send when" note below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short text reply too. Only use ids listed below.
@@ -309,14 +329,25 @@ const SEND_TEMPLATE_DRAFT_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
-/** Build a WhatsApp list from the inventory categories. */
-function buildCategoryList(categories: string[]): AgentListOut | undefined {
-  const rows = categories.slice(0, 10).map(c => ({ id: `category:${c}`, title: c.slice(0, 24) }));
+/** Build a WhatsApp list from the inventory categories, with their images. */
+function buildCategoryList(categories: AgentCategory[]): AgentListOut | undefined {
+  const rows = categories.slice(0, 10).map(c => ({ id: `category:${c.name}`, title: c.name.slice(0, 24) }));
   if (rows.length === 0) return undefined;
+  // Category images are sent as photos before the list (caption = category name).
+  const media: AgentMediaOut[] = categories
+    .filter(c => c.imageUrl || c.imageAssetId)
+    .slice(0, 10)
+    .map(c => ({
+      type: 'image' as const,
+      url: c.imageUrl ?? undefined,
+      assetId: c.imageAssetId ?? undefined,
+      caption: c.name,
+    }));
   return {
     body: 'Which category would you like to explore? Tap one below 👇',
     button: 'View categories',
     sections: [{ title: 'Our collections', rows }],
+    media: media.length ? media : undefined,
   };
 }
 

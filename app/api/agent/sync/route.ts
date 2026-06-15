@@ -1,70 +1,13 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/db';
-import { catalogProducts, type ProductMedia } from '@/db/schema';
-import { and, isNull, eq } from 'drizzle-orm';
-import OpenAI from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
-
-/** Build a plain text representation of a product for embedding. */
-function productToText(p: typeof catalogProducts.$inferSelect): string {
-  const mediaDescs = ((p.media ?? []) as ProductMedia[])
-    .map(m => m.description)
-    .filter(Boolean);
-  const parts = [
-    p.name,
-    p.category   && `Category: ${p.category}`,
-    p.fabric     && `Fabric: ${p.fabric}`,
-    p.occasions  && `Occasions: ${p.occasions}`,
-    p.priceRange && `Price: ${p.priceRange}`,
-    p.description,
-    p.customInfo && `Additional info: ${p.customInfo}`,
-    mediaDescs.length && `Photos: ${mediaDescs.join('; ')}`,
-  ].filter(Boolean);
-  return parts.join('. ');
-}
+import { syncInventoryEmbeddings } from '@/lib/embeddings';
 
 export async function POST() {
   try {
-    // Embed the agent-context products that don't have a current embedding.
-    // PATCH clears `embedding` on edit, so this re-embeds changed products too.
-    const unsynced = await db
-      .select()
-      .from(catalogProducts)
-      .where(and(
-        eq(catalogProducts.inAgentContext, true),
-        eq(catalogProducts.isActive, true),
-        isNull(catalogProducts.embedding),
-      ));
-
-    if (unsynced.length === 0) {
+    const { synced, total } = await syncInventoryEmbeddings();
+    if (synced === 0) {
       return NextResponse.json({ synced: 0, message: 'All products already synced' });
     }
-
-    let synced = 0;
-    const now = new Date();
-
-    // Process in batches of 20 (OpenAI limit is 2048 inputs per call)
-    for (let i = 0; i < unsynced.length; i += 20) {
-      const batch = unsynced.slice(i, i + 20);
-      const texts = batch.map(productToText);
-
-      const embRes = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: texts,
-      });
-
-      for (let j = 0; j < batch.length; j++) {
-        const embedding = embRes.data[j].embedding;
-        await db
-          .update(catalogProducts)
-          .set({ embedding, syncedAt: now, updatedAt: now })
-          .where(eq(catalogProducts.id, batch[j].id));
-        synced++;
-      }
-    }
-
-    return NextResponse.json({ synced, total: unsynced.length });
+    return NextResponse.json({ synced, total });
   } catch (err: any) {
     console.error('[sync]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });

@@ -67,6 +67,15 @@ export function textNodeContent(node: FlowNode | undefined): string | null {
   return typeof c === 'string' ? c : null;
 }
 
+/** A photo/video a textNode (message node) sends — uploaded asset or a public URL. */
+export interface FlowMedia { type: 'image' | 'video'; assetId?: string; url?: string; caption?: string; mimeType?: string; }
+export function textNodeMedia(node: FlowNode | undefined): FlowMedia | null {
+  if (!node || node.type !== 'textNode') return null;
+  const m = (node.data as { media?: FlowMedia } | undefined)?.media;
+  if (!m || (m.type !== 'image' && m.type !== 'video') || (!m.assetId && !m.url)) return null;
+  return m;
+}
+
 /** A short label for a textNode (its name), for logs/inbox. */
 export function textNodeLabel(node: FlowNode | undefined): string {
   const name = (node?.data as { name?: string } | undefined)?.name;

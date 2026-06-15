@@ -389,17 +389,49 @@ export interface ProductMedia {
   description?: string;
 }
 
+// One label/value pair describing how a variant differs from its parent
+// product — e.g. { label: 'Color', value: 'Red' } or { label: 'Size', value: 'M' }.
+export interface VariantAttribute {
+  label: string;
+  value: string;
+}
+
+// ─── Inventory: categories ─────────────────────────────────────────────────────
+// First-class product categories, each with a single image. Products reference a
+// category via catalogProducts.categoryId; the agent uses the image when it sends
+// the browse-categories list to a customer.
+
+export const categories = pgTable('categories', {
+  id:             uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  name:           varchar('name', { length: 100 }).notNull(),
+  description:    text('description'),
+  imageUrl:       text('image_url'),       // pasted public URL
+  imageAssetId:   text('image_asset_id'),  // R2 key (served via /api/inventory/media)
+  sortOrder:      integer('sort_order').notNull().default(0),
+  inAgentContext: boolean('in_agent_context').notNull().default(true),
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('categories_name_idx').on(t.name),
+  index('categories_sort_idx').on(t.sortOrder),
+]);
+
 export const catalogProducts = pgTable('catalog_products', {
   id:          uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   name:        varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   priceRange:  varchar('price_range', { length: 100 }),
-  category:    varchar('category', { length: 100 }),
+  category:    varchar('category', { length: 100 }),  // denormalized category name (kept in sync with categoryId)
+  categoryId:  uuid('category_id').references((): any => categories.id, { onDelete: 'set null' }),
   fabric:      varchar('fabric', { length: 100 }),
   occasions:   text('occasions'),
   imageUrl:    text('image_url'),  // legacy single image — superseded by `media`
   // Photos/videos the agent can send, each with its own description
   media:       jsonb('media').$type<ProductMedia[]>().notNull().default(sql`'[]'::jsonb`),
+  // Variant linkage: a variant points at its parent product, and describes the
+  // difference via variantAttributes (Color: Red, Size: M, …).
+  parentId:    uuid('parent_id').references((): any => catalogProducts.id, { onDelete: 'cascade' }),
+  variantAttributes: jsonb('variant_attributes').$type<VariantAttribute[]>().notNull().default(sql`'[]'::jsonb`),
   // Retailer / WhatsApp catalog product ID — legacy, unused
   retailerId:  varchar('retailer_id', { length: 255 }),
   // Extra notes the admin writes so the agent can explain the product better
@@ -415,9 +447,21 @@ export const catalogProducts = pgTable('catalog_products', {
 }, (t) => [
   index('catalog_products_active_idx').on(t.isActive),
   index('catalog_products_category_idx').on(t.category),
+  index('catalog_products_category_id_idx').on(t.categoryId),
+  index('catalog_products_parent_idx').on(t.parentId),
   index('catalog_products_retailer_idx').on(t.retailerId),
   index('catalog_products_in_agent_idx').on(t.inAgentContext),
 ]);
+
+export const categoriesRelations = relations(categories, ({ many }) => ({
+  products: many(catalogProducts),
+}));
+
+export const catalogProductsRelations = relations(catalogProducts, ({ one, many }) => ({
+  category: one(categories, { fields: [catalogProducts.categoryId], references: [categories.id] }),
+  parent:   one(catalogProducts, { fields: [catalogProducts.parentId], references: [catalogProducts.id], relationName: 'productVariants' }),
+  variants: many(catalogProducts, { relationName: 'productVariants' }),
+}));
 
 // ─── Agent: draft messages ────────────────────────────────────────────────────
 

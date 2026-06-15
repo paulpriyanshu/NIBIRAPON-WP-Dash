@@ -1,20 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { catalogProducts, type ProductMedia } from '@/db/schema';
+import { catalogProducts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-
-function cleanMedia(media: unknown): ProductMedia[] {
-  if (!Array.isArray(media)) return [];
-  return media
-    .filter((m): m is ProductMedia => !!m && (m.type === 'image' || m.type === 'video') && (!!m.url || !!m.assetId))
-    .map(m => ({
-      type:        m.type,
-      url:         m.url        || undefined,
-      assetId:     m.assetId    || undefined,
-      mimeType:    m.mimeType   || undefined,
-      description: m.description || undefined,
-    }));
-}
+import { cleanMedia, cleanVariantAttributes, categoryNameById } from '@/lib/inventory-write';
 
 export async function PATCH(
   req: NextRequest,
@@ -24,29 +12,34 @@ export async function PATCH(
     const { id } = await params;
     const body = await req.json();
     const {
-      name, description, priceRange, category, fabric, occasions,
-      customInfo, media, isActive, inAgentContext,
+      name, description, priceRange, categoryId, fabric, occasions,
+      customInfo, media, isActive, inAgentContext, parentId, variantAttributes,
     } = body;
 
     // Toggling agent-context alone doesn't change product content, so keep the
     // embedding. Any change to a content/media field invalidates it for re-sync.
     const contentChanged = [
-      name, description, priceRange, category, fabric, occasions, customInfo, media,
+      name, description, priceRange, categoryId, fabric, occasions, customInfo, media, variantAttributes,
     ].some(v => v !== undefined);
+
+    // When the category changes, re-derive the denormalized `category` name.
+    const categoryName = categoryId !== undefined ? await categoryNameById(categoryId) : undefined;
 
     await db
       .update(catalogProducts)
       .set({
-        ...(name           !== undefined && { name }),
-        ...(description    !== undefined && { description }),
-        ...(priceRange     !== undefined && { priceRange }),
-        ...(category       !== undefined && { category }),
-        ...(fabric         !== undefined && { fabric }),
-        ...(occasions      !== undefined && { occasions }),
-        ...(customInfo     !== undefined && { customInfo }),
-        ...(media          !== undefined && { media: cleanMedia(media) }),
-        ...(isActive       !== undefined && { isActive }),
-        ...(inAgentContext !== undefined && { inAgentContext }),
+        ...(name              !== undefined && { name }),
+        ...(description       !== undefined && { description }),
+        ...(priceRange        !== undefined && { priceRange }),
+        ...(categoryId        !== undefined && { categoryId: categoryId || null, category: categoryName }),
+        ...(fabric            !== undefined && { fabric }),
+        ...(occasions         !== undefined && { occasions }),
+        ...(customInfo        !== undefined && { customInfo }),
+        ...(media             !== undefined && { media: cleanMedia(media) }),
+        ...(parentId          !== undefined && { parentId: parentId || null }),
+        ...(variantAttributes !== undefined && { variantAttributes: cleanVariantAttributes(variantAttributes) }),
+        ...(isActive          !== undefined && { isActive }),
+        ...(inAgentContext    !== undefined && { inAgentContext }),
         // Clear embedding so it gets re-synced with updated info
         ...(contentChanged && { embedding: null, syncedAt: null }),
         updatedAt: new Date(),

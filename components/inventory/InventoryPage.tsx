@@ -1,11 +1,13 @@
 'use client';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useInfiniteList } from '@/hooks/useInfiniteList';
 import {
   Package, Plus, Trash2, Pencil, Check, Loader2,
   ChevronDown, ChevronUp, Layers, Calendar, StickyNote,
-  Upload, Link2, ImageIcon, Film, Bot,
+  Upload, Link2, ImageIcon, Film, Bot, Tags, GitBranch, X,
 } from 'lucide-react';
+import { inputCls } from './shared';
+import CategoriesPanel, { type Category } from './CategoriesPanel';
 
 /* ── types ───────────────────────────────────────────────────────── */
 
@@ -17,18 +19,24 @@ interface ProductMedia {
   description?: string;
 }
 
+interface VariantAttribute { label: string; value: string; }
+
 interface Product {
   id: string; name: string; description: string | null;
-  priceRange: string | null; category: string | null;
+  priceRange: string | null; category: string | null; categoryId: string | null;
   fabric: string | null; occasions: string | null;
   media: ProductMedia[]; customInfo: string | null;
+  parentId: string | null; variantAttributes: VariantAttribute[];
   isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
+  variants?: Product[];
 }
 
 const EMPTY_PRODUCT = {
-  name: '', description: '', priceRange: '', category: '',
+  name: '', description: '', priceRange: '', categoryId: '',
   fabric: '', occasions: '', customInfo: '',
   media: [] as ProductMedia[],
+  parentId: '' as string,
+  variantAttributes: [] as VariantAttribute[],
 };
 type ProductForm = typeof EMPTY_PRODUCT;
 
@@ -39,8 +47,6 @@ function mediaSrc(m: ProductMedia): string {
   if (m.assetId) return `/api/inventory/media/${m.assetId}`;
   return m.url || '';
 }
-
-const inputCls = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50 transition-colors';
 
 /* ── Media manager ───────────────────────────────────────────────── */
 
@@ -59,7 +65,7 @@ function MediaManager({ media, onChange }: {
   const remove = (i: number) => onChange(media.filter((_, idx) => idx !== i));
 
   const MAX_IMAGE = 5  * 1024 * 1024;
-  const MAX_VIDEO = 16 * 1024 * 1024;
+  const MAX_VIDEO = 100 * 1024 * 1024;
 
   const onFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -191,18 +197,59 @@ function MediaManager({ media, onChange }: {
   );
 }
 
+/* ── Variant attributes editor ───────────────────────────────────── */
+
+function VariantAttributesEditor({ attrs, onChange }: {
+  attrs: VariantAttribute[];
+  onChange: (a: VariantAttribute[]) => void;
+}) {
+  const update = (i: number, patch: Partial<VariantAttribute>) =>
+    onChange(attrs.map((a, idx) => idx === i ? { ...a, ...patch } : a));
+  const remove = (i: number) => onChange(attrs.filter((_, idx) => idx !== i));
+  const add = () => onChange([...attrs, { label: '', value: '' }]);
+
+  return (
+    <div className="space-y-2">
+      <datalist id="variant-attr-labels">
+        <option value="Color" /><option value="Size" /><option value="Length" /><option value="Material" />
+      </datalist>
+      {attrs.map((a, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input list="variant-attr-labels" value={a.label} onChange={e => update(i, { label: e.target.value })}
+            placeholder="Attribute (e.g. Color)" className={inputCls} />
+          <input value={a.value} onChange={e => update(i, { value: e.target.value })}
+            placeholder="Value (e.g. Red)" className={inputCls} />
+          <button type="button" onClick={() => remove(i)}
+            className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0">
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+      <button type="button" onClick={add}
+        className="flex items-center gap-1 text-[11px] text-[#25D366]/80 hover:text-[#25D366] transition-colors">
+        <Plus size={11} /> Add attribute
+      </button>
+    </div>
+  );
+}
+
 /* ── Product form ────────────────────────────────────────────────── */
 
-function ProductFormCard({ initial, onSave, onCancel, loading }: {
+function ProductFormCard({ initial, onSave, onCancel, loading, categories, parentOptions, lockParentName }: {
   initial?: Partial<ProductForm>;
   onSave: (data: ProductForm) => Promise<void>;
   onCancel: () => void;
   loading: boolean;
+  categories: Category[];
+  parentOptions: { id: string; name: string }[];
+  lockParentName?: string;   // when adding a variant from a parent row, show the parent name read-only
 }) {
   const [form, setForm] = useState<ProductForm>({ ...EMPTY_PRODUCT, ...initial });
   const set = (k: keyof ProductForm) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const isVariant = !!form.parentId || !!lockParentName;
 
   return (
     <div className="bg-[#1f2c34] border border-[#25D366]/30 rounded-xl p-4 space-y-3">
@@ -217,13 +264,40 @@ function ProductFormCard({ initial, onSave, onCancel, loading }: {
         </div>
         <div>
           <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Category</label>
-          <input value={form.category} onChange={set('category')} placeholder="e.g. Silk, Cotton" className={inputCls} />
+          <select value={form.categoryId} onChange={set('categoryId')}
+            className="w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-[#25D366]/50 transition-colors">
+            <option value="">— none —</option>
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
         </div>
         <div>
           <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Fabric</label>
           <input value={form.fabric} onChange={set('fabric')} placeholder="e.g. Pure Silk" className={inputCls} />
         </div>
       </div>
+
+      {/* Variant linkage */}
+      <div className="bg-[#111b21]/60 border border-white/8 rounded-lg p-3 space-y-2.5">
+        <label className="text-white/40 text-[10px] uppercase tracking-wider flex items-center gap-1">
+          <GitBranch size={9} /> Variant of another product
+        </label>
+        {lockParentName ? (
+          <p className="text-white/60 text-xs">Variant of <span className="text-[#25D366]">{lockParentName}</span></p>
+        ) : (
+          <select value={form.parentId} onChange={set('parentId')}
+            className="w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-[#25D366]/50 transition-colors">
+            <option value="">— standalone product (not a variant) —</option>
+            {parentOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        )}
+        {isVariant && (
+          <div>
+            <p className="text-white/30 text-[10px] mb-1.5">How does this variant differ? (e.g. Color: Red, Size: M)</p>
+            <VariantAttributesEditor attrs={form.variantAttributes} onChange={a => setForm(f => ({ ...f, variantAttributes: a }))} />
+          </div>
+        )}
+      </div>
+
       <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Occasions</label>
         <input value={form.occasions} onChange={set('occasions')} placeholder="e.g. Wedding, Festival" className={inputCls} />
@@ -260,6 +334,21 @@ function ProductFormCard({ initial, onSave, onCancel, loading }: {
   );
 }
 
+/* ── Variant chips ───────────────────────────────────────────────── */
+
+function VariantChips({ attrs }: { attrs: VariantAttribute[] }) {
+  if (!attrs?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {attrs.map((a, i) => (
+        <span key={i} className="text-[9px] bg-white/8 text-white/45 px-1.5 py-0.5 rounded-full">
+          {a.label}: <span className="text-white/70">{a.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /* ── Main page ───────────────────────────────────────────────────── */
 
 export default function InventoryPage({ initialItems = [], initialCursor = null }: {
@@ -269,15 +358,30 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
   const { items: products, setItems: setProducts, loading, hasMore, reload, sentinelRef } =
     useInfiniteList<Product>({ endpoint: '/api/inventory', limit: 30, initialItems, initialCursor });
 
-  const [showForm, setShowForm] = useState(false);
-  const [editId,   setEditId]   = useState<string | null>(null);
-  const [saving,   setSaving]   = useState(false);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [tab, setTab] = useState<'products' | 'categories'>('products');
+  const [categories, setCategories] = useState<Category[]>([]);
+
+  const [showForm, setShowForm]   = useState(false);
+  const [editId,   setEditId]     = useState<string | null>(null);
+  const [saving,   setSaving]     = useState(false);
+  const [expanded, setExpanded]   = useState<string | null>(null);
+  const [variantParent, setVariantParent] = useState<{ id: string; name: string } | null>(null);
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await fetch('/api/categories');
+      if (res.ok) setCategories(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadCategories(); }, []);
+
+  const parentOptions = products.map(p => ({ id: p.id, name: p.name }));
 
   const addProduct = async (data: ProductForm) => {
     setSaving(true);
     await fetch('/api/inventory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setShowForm(false); reload();
+    setSaving(false); setShowForm(false); setVariantParent(null); reload();
   };
 
   const updateProduct = async (id: string, data: ProductForm) => {
@@ -287,16 +391,31 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
   };
 
   const deleteProduct = async (id: string) => {
-    if (!confirm('Delete this product from inventory?')) return;
+    if (!confirm('Delete this product from inventory? Its variants will also be removed.')) return;
     await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
     setProducts(prev => prev.filter(p => p.id !== id));
   };
 
+  const variantInitial = (p: Product): Partial<ProductForm> => ({
+    name:        p.name,
+    description: p.description ?? '',
+    priceRange:  p.priceRange  ?? '',
+    categoryId:  p.categoryId  ?? '',
+    fabric:      p.fabric      ?? '',
+    occasions:   p.occasions   ?? '',
+    customInfo:  p.customInfo  ?? '',
+    media:       p.media       ?? [],
+    parentId:    p.parentId    ?? '',
+    variantAttributes: p.variantAttributes ?? [],
+  });
+
+  const totalInAgent = products.filter(p => p.inAgentContext).length;
+
   return (
     <div className="h-full flex flex-col bg-[#0b141a] overflow-hidden">
       {/* header */}
-      <div className="px-6 pt-6 pb-4 border-b border-white/8 shrink-0">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="px-6 pt-6 pb-0 border-b border-white/8 shrink-0">
+        <div className="flex items-center justify-between gap-3 flex-wrap pb-4">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-[#25D366]/15 rounded-xl flex items-center justify-center">
               <Package size={18} className="text-[#25D366]" />
@@ -304,134 +423,227 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
             <div>
               <h1 className="text-white font-bold text-lg">Inventory</h1>
               <p className="text-white/40 text-xs">
-                {products.length} product{products.length !== 1 ? 's' : ''} · {products.filter(p => p.inAgentContext).length} in agent context
+                {tab === 'products'
+                  ? `${products.length} product${products.length !== 1 ? 's' : ''} · ${totalInAgent} in agent context`
+                  : `${categories.length} categor${categories.length !== 1 ? 'ies' : 'y'}`}
               </p>
             </div>
           </div>
-          <button onClick={() => { setShowForm(true); setEditId(null); }}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] transition-all">
-            <Plus size={14} /> Add Product
-          </button>
+          {tab === 'products' && (
+            <button onClick={() => { setShowForm(true); setEditId(null); setVariantParent(null); }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] transition-all">
+              <Plus size={14} /> Add Product
+            </button>
+          )}
+        </div>
+
+        {/* tabs */}
+        <div className="flex gap-1">
+          {([['products', 'Products', Package], ['categories', 'Categories', Tags]] as const).map(([key, label, Icon]) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all ${
+                tab === key ? 'border-[#25D366] text-white' : 'border-transparent text-white/40 hover:text-white/70'
+              }`}>
+              <Icon size={13} /> {label}
+            </button>
+          ))}
         </div>
       </div>
 
       {/* body */}
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3 max-w-3xl">
-        {showForm && (
-          <ProductFormCard onSave={addProduct} onCancel={() => setShowForm(false)} loading={saving} />
-        )}
-
-        {products.length === 0 && loading ? (
-          [...Array(3)].map((_, i) => <div key={i} className="h-16 bg-[#1f2c34] rounded-xl animate-pulse" />)
-        ) : products.length === 0 && !showForm ? (
-          <div className="text-center py-16 text-white/20">
-            <Package size={32} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">No products yet</p>
-            <p className="text-xs mt-1 text-white/15">Add your first product with photos, info and price</p>
-          </div>
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        {tab === 'categories' ? (
+          <CategoriesPanel categories={categories} onChange={loadCategories} />
         ) : (
-          products.map(p => (
-            <div key={p.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
-              {editId === p.id ? (
-                <div className="p-3">
-                  <ProductFormCard
-                    initial={{
-                      name:        p.name,
-                      description: p.description ?? '',
-                      priceRange:  p.priceRange  ?? '',
-                      category:    p.category    ?? '',
-                      fabric:      p.fabric      ?? '',
-                      occasions:   p.occasions   ?? '',
-                      customInfo:  p.customInfo  ?? '',
-                      media:       p.media       ?? [],
-                    }}
-                    onSave={data => updateProduct(p.id, data)}
-                    onCancel={() => setEditId(null)}
-                    loading={saving}
-                  />
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/3 transition-colors"
-                    onClick={() => setExpanded(e => e === p.id ? null : p.id)}>
-                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
-                      {p.media?.[0]
-                        ? (p.media[0].type === 'video'
-                            ? <video src={mediaSrc(p.media[0])} className="w-full h-full object-cover" muted />
-                            // eslint-disable-next-line @next/next/no-img-element
-                            : <img src={mediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />)
-                        : <Package size={16} className="text-white/20" />}
+        <div className="space-y-3 max-w-3xl">
+          {showForm && (
+            <ProductFormCard onSave={addProduct} onCancel={() => setShowForm(false)} loading={saving}
+              categories={categories} parentOptions={parentOptions} />
+          )}
+
+          {products.length === 0 && loading ? (
+            [...Array(3)].map((_, i) => <div key={i} className="h-16 bg-[#1f2c34] rounded-xl animate-pulse" />)
+          ) : products.length === 0 && !showForm ? (
+            <div className="text-center py-16 text-white/20">
+              <Package size={32} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No products yet</p>
+              <p className="text-xs mt-1 text-white/15">Add your first product with photos, info and price</p>
+            </div>
+          ) : (
+            products.map(p => (
+              <div key={p.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
+                {editId === p.id ? (
+                  <div className="p-3">
+                    <ProductFormCard
+                      initial={variantInitial(p)}
+                      onSave={data => updateProduct(p.id, data)}
+                      onCancel={() => setEditId(null)}
+                      loading={saving}
+                      categories={categories}
+                      parentOptions={parentOptions.filter(o => o.id !== p.id)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/3 transition-colors"
+                      onClick={() => setExpanded(e => e === p.id ? null : p.id)}>
+                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                        {p.media?.[0]
+                          ? (p.media[0].type === 'video'
+                              ? <video src={mediaSrc(p.media[0])} className="w-full h-full object-cover" muted />
+                              // eslint-disable-next-line @next/next/no-img-element
+                              : <img src={mediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />)
+                          : <Package size={16} className="text-white/20" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-white text-xs font-medium truncate">{p.name}</p>
+                          {p.inAgentContext && (
+                            <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
+                              <Bot size={8} /> In agent
+                            </span>
+                          )}
+                          {(p.variants?.length ?? 0) > 0 && (
+                            <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
+                              <GitBranch size={8} /> {p.variants!.length} variant{p.variants!.length !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                          {p.media?.length > 0 && (
+                            <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full shrink-0">
+                              {p.media.length} media
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 text-white/30 text-[10px]">
+                          {p.category   && <span>{p.category}</span>}
+                          {p.priceRange && <span>· {p.priceRange}</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                        <button onClick={() => { setVariantParent({ id: p.id, name: p.name }); setEditId(null); setShowForm(false); }}
+                          title="Add a variant"
+                          className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
+                          <GitBranch size={13} />
+                        </button>
+                        <button onClick={() => { setEditId(p.id); setShowForm(false); }} className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
+                          <Pencil size={13} />
+                        </button>
+                        <button onClick={() => deleteProduct(p.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                          <Trash2 size={13} />
+                        </button>
+                        {expanded === p.id ? <ChevronUp size={13} className="text-white/25 ml-1" /> : <ChevronDown size={13} className="text-white/25 ml-1" />}
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-white text-xs font-medium truncate">{p.name}</p>
-                        {p.inAgentContext && (
-                          <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
-                            <Bot size={8} /> In agent
-                          </span>
+
+                    {/* add-variant form for this parent */}
+                    {variantParent?.id === p.id && (
+                      <div className="px-4 pb-4 pt-1 border-t border-white/5">
+                        <ProductFormCard
+                          initial={{ parentId: p.id, categoryId: p.categoryId ?? '' }}
+                          lockParentName={p.name}
+                          onSave={addProduct}
+                          onCancel={() => setVariantParent(null)}
+                          loading={saving}
+                          categories={categories}
+                          parentOptions={parentOptions}
+                        />
+                      </div>
+                    )}
+
+                    {expanded === p.id && (
+                      <div className="px-4 pb-4 pt-1 border-t border-white/5 space-y-3">
+                        {p.description && <p className="text-white/50 text-xs leading-relaxed">{p.description}</p>}
+                        <div className="flex flex-wrap gap-3 text-[10px] text-white/30">
+                          {p.fabric    && <span className="flex items-center gap-1"><Layers size={9} /> {p.fabric}</span>}
+                          {p.occasions && <span className="flex items-center gap-1"><Calendar size={9} /> {p.occasions}</span>}
+                        </div>
+                        {p.customInfo && (
+                          <div className="bg-purple-500/8 border border-purple-500/15 rounded-lg px-3 py-2">
+                            <p className="text-purple-400/70 text-[9px] uppercase tracking-wider mb-1 flex items-center gap-1">
+                              <StickyNote size={9} /> Agent notes
+                            </p>
+                            <p className="text-purple-200/60 text-[11px] leading-relaxed">{p.customInfo}</p>
+                          </div>
                         )}
                         {p.media?.length > 0 && (
-                          <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full shrink-0">
-                            {p.media.length} media
-                          </span>
+                          <div className="grid grid-cols-4 gap-2">
+                            {p.media.map((m, i) => (
+                              <div key={i} className="aspect-square rounded-lg overflow-hidden bg-white/5">
+                                {m.type === 'video'
+                                  ? <video src={mediaSrc(m)} className="w-full h-full object-cover" muted />
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  : <img src={mediaSrc(m)} alt="" className="w-full h-full object-cover" />}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* variants */}
+                        {(p.variants?.length ?? 0) > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-white/40 text-[9px] uppercase tracking-wider flex items-center gap-1">
+                              <GitBranch size={9} /> Variants
+                            </p>
+                            {p.variants!.map(v => (
+                              <div key={v.id} className="flex items-center gap-3 bg-[#111b21] border border-white/8 rounded-lg px-3 py-2">
+                                <div className="w-8 h-8 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                                  {v.media?.[0]
+                                    ? (v.media[0].type === 'video'
+                                        ? <video src={mediaSrc(v.media[0])} className="w-full h-full object-cover" muted />
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        : <img src={mediaSrc(v.media[0])} alt="" className="w-full h-full object-cover" />)
+                                    : <Package size={13} className="text-white/20" />}
+                                </div>
+                                <div className="flex-1 min-w-0 space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-white/80 text-[11px] font-medium truncate">{v.name}</p>
+                                    {v.priceRange && <span className="text-white/30 text-[10px]">· {v.priceRange}</span>}
+                                  </div>
+                                  <VariantChips attrs={v.variantAttributes} />
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button onClick={() => { setEditId(v.id); setExpanded(v.id); }}
+                                    className="p-1 rounded text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
+                                    <Pencil size={12} />
+                                  </button>
+                                  <button onClick={() => deleteProduct(v.id)}
+                                    className="p-1 rounded text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* edit a variant inline */}
+                        {p.variants?.some(v => v.id === editId) && (
+                          <div className="pt-1">
+                            <ProductFormCard
+                              initial={variantInitial(p.variants!.find(v => v.id === editId)!)}
+                              onSave={data => updateProduct(editId!, data)}
+                              onCancel={() => setEditId(null)}
+                              loading={saving}
+                              categories={categories}
+                              parentOptions={parentOptions.filter(o => o.id !== editId)}
+                            />
+                          </div>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 mt-0.5 text-white/30 text-[10px]">
-                        {p.category   && <span>{p.category}</span>}
-                        {p.priceRange && <span>· {p.priceRange}</span>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                      <button onClick={() => { setEditId(p.id); setShowForm(false); }} className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
-                        <Pencil size={13} />
-                      </button>
-                      <button onClick={() => deleteProduct(p.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                        <Trash2 size={13} />
-                      </button>
-                      {expanded === p.id ? <ChevronUp size={13} className="text-white/25 ml-1" /> : <ChevronDown size={13} className="text-white/25 ml-1" />}
-                    </div>
-                  </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ))
+          )}
 
-                  {expanded === p.id && (
-                    <div className="px-4 pb-4 pt-1 border-t border-white/5 space-y-3">
-                      {p.description && <p className="text-white/50 text-xs leading-relaxed">{p.description}</p>}
-                      <div className="flex flex-wrap gap-3 text-[10px] text-white/30">
-                        {p.fabric    && <span className="flex items-center gap-1"><Layers size={9} /> {p.fabric}</span>}
-                        {p.occasions && <span className="flex items-center gap-1"><Calendar size={9} /> {p.occasions}</span>}
-                      </div>
-                      {p.customInfo && (
-                        <div className="bg-purple-500/8 border border-purple-500/15 rounded-lg px-3 py-2">
-                          <p className="text-purple-400/70 text-[9px] uppercase tracking-wider mb-1 flex items-center gap-1">
-                            <StickyNote size={9} /> Agent notes
-                          </p>
-                          <p className="text-purple-200/60 text-[11px] leading-relaxed">{p.customInfo}</p>
-                        </div>
-                      )}
-                      {p.media?.length > 0 && (
-                        <div className="grid grid-cols-4 gap-2">
-                          {p.media.map((m, i) => (
-                            <div key={i} className="aspect-square rounded-lg overflow-hidden bg-white/5">
-                              {m.type === 'video'
-                                ? <video src={mediaSrc(m)} className="w-full h-full object-cover" muted />
-                                // eslint-disable-next-line @next/next/no-img-element
-                                : <img src={mediaSrc(m)} alt="" className="w-full h-full object-cover" />}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+          {/* Infinite-scroll sentinel — loads the next page as it nears view. */}
+          {hasMore && (
+            <div ref={sentinelRef} className="py-4 flex justify-center">
+              {loading && <Loader2 size={16} className="animate-spin text-white/30" />}
             </div>
-          ))
-        )}
-
-        {/* Infinite-scroll sentinel — loads the next page as it nears view. */}
-        {hasMore && (
-          <div ref={sentinelRef} className="py-4 flex justify-center">
-            {loading && <Loader2 size={16} className="animate-spin text-white/30" />}
-          </div>
+          )}
+        </div>
         )}
       </div>
     </div>

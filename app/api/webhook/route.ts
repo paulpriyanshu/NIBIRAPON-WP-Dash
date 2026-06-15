@@ -497,6 +497,32 @@ async function agentReply({
 
   // ── 4. Category list (tappable) ───────────────────────────────────────────
   if (list) {
+    // Send each category image first (caption = category name), so the customer
+    // sees visuals before the tappable list. Same delivery path as product media.
+    for (const m of list.media ?? []) {
+      try {
+        const sendUrl = m.assetId ? await getSendUrl(m.assetId) : m.url;
+        if (!sendUrl) continue;
+        const waRes = await sendMediaMessage({ to: toPhone, type: m.type, mediaUrl: sendUrl, caption: m.caption });
+        const waId = waRes?.messages?.[0]?.id;
+        const displayUrl = m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? null);
+        await db.insert(messages).values({
+          id:            waId || localId('cat'),
+          conversationId,
+          fromNumber:    bizPhone,
+          toNumber:      toPhone,
+          type:          m.type,
+          mediaUrl:      displayUrl,
+          mediaCaption:  m.caption ?? null,
+          status:        waId ? 'sent' : 'failed',
+          isOutgoing:    true,
+          sentBy:        'agent',
+          sentAt:        new Date(),
+        }).onConflictDoNothing();
+      } catch (err) {
+        console.error('[agent] category image send failed:', err instanceof Error ? err.message : err);
+      }
+    }
     try {
       const waRes = await sendListMessage({
         to: toPhone, body: list.body, button: list.button,

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { catalogProducts, type ProductMedia } from '@/db/schema';
+import { catalogProducts } from '@/db/schema';
 import { getInventoryPage, getAllInventory } from '@/lib/queries/inventory';
+import { cleanMedia, cleanVariantAttributes, categoryNameById } from '@/lib/inventory-write';
 
 export async function GET(req: NextRequest) {
   try {
@@ -24,40 +25,36 @@ export async function GET(req: NextRequest) {
   }
 }
 
-function cleanMedia(media: unknown): ProductMedia[] {
-  if (!Array.isArray(media)) return [];
-  return media
-    .filter((m): m is ProductMedia => !!m && (m.type === 'image' || m.type === 'video') && (!!m.url || !!m.assetId))
-    .map(m => ({
-      type:        m.type,
-      url:         m.url        || undefined,
-      assetId:     m.assetId    || undefined,
-      mimeType:    m.mimeType   || undefined,
-      description: m.description || undefined,
-    }));
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, description, priceRange, category, fabric, occasions, customInfo, media, inAgentContext } = body;
+    const {
+      name, description, priceRange, categoryId, fabric, occasions,
+      customInfo, media, inAgentContext, parentId, variantAttributes,
+    } = body;
 
     if (!name?.trim()) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
 
+    // The dropdown is the source of truth: derive the denormalized `category` name from categoryId.
+    const categoryName = await categoryNameById(categoryId);
+
     const [inserted] = await db
       .insert(catalogProducts)
       .values({
-        name:           name.trim(),
-        description:    description || null,
-        priceRange:     priceRange  || null,
-        category:       category    || null,
-        fabric:         fabric      || null,
-        occasions:      occasions   || null,
-        customInfo:     customInfo  || null,
-        media:          cleanMedia(media),
-        inAgentContext: !!inAgentContext,
+        name:              name.trim(),
+        description:       description || null,
+        priceRange:        priceRange  || null,
+        category:          categoryName,
+        categoryId:        categoryId   || null,
+        fabric:            fabric      || null,
+        occasions:         occasions   || null,
+        customInfo:        customInfo  || null,
+        media:             cleanMedia(media),
+        parentId:          parentId    || null,
+        variantAttributes: cleanVariantAttributes(variantAttributes),
+        inAgentContext:    !!inAgentContext,
       })
       .returning({ id: catalogProducts.id });
 

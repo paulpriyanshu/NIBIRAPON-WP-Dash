@@ -14,6 +14,12 @@ export function r2Configured(): boolean {
   return !!(ENDPOINT && BUCKET && ACCESS_KEY && SECRET_KEY);
 }
 
+/** Whether a public base domain is configured — i.e. objectUrl() returns a clean,
+ *  unsigned public URL (which WhatsApp's media fetcher accepts for video). */
+export function r2HasPublicBase(): boolean {
+  return !!PUBLIC_BASE;
+}
+
 let _client: S3Client | null = null;
 function client(): S3Client {
   if (!_client) {

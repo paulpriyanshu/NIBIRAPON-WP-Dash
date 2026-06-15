@@ -3,11 +3,12 @@ import getMongoClient from '@/lib/mongodb';
 import { db } from '@/db';
 import { messages, conversations } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage } from '@/lib/whatsapp-api';
+import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage, sendMediaMessage, uploadMedia } from '@/lib/whatsapp-api';
+import { getSendUrl, r2HasPublicBase } from '@/lib/inventory-media';
 import {
   compileFlow, resolveNext, hasOnward, delayAfter, quickReplyButtons,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
-  textNodeContent, textNodeLabel, isSendableNode,
+  textNodeContent, textNodeLabel, textNodeMedia, isSendableNode,
   type Flow, type FlowButton, type FlowNode, type CompiledFlow,
 } from '@/lib/flow-engine';
 import { configToSendPayload } from '@/lib/templates';
@@ -30,7 +31,11 @@ async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise
 }
 
 /** What a sent flow node produced — used for persistence/logging. */
-interface SentNode { msgId?: string; label: string; isTemplate: boolean; text?: string }
+interface SentNode {
+  msgId?: string; label: string; isTemplate: boolean; text?: string;
+  // Present when the node sent a photo/video (message node with media).
+  media?: { type: 'image' | 'video'; displayUrl: string | null; caption?: string };
+}
 
 /**
  * Send whatever a flow node represents — a WhatsApp template or a custom text
@@ -41,8 +46,53 @@ async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<Sen
   if (!isSendableNode(node)) return null;
 
   if (node!.type === 'textNode') {
-    const text = (textNodeContent(node) ?? '').trim();
+    const text  = (textNodeContent(node) ?? '').trim();
+    const media = textNodeMedia(node);
     const label = textNodeLabel(node);
+
+    // Message node with a photo/video: send it as a media message, using the
+    // typed text as its caption (so "media + message" is one WhatsApp message).
+    if (media) {
+      const sendUrl = media.assetId ? await getSendUrl(media.assetId) : media.url;
+      if (!sendUrl) { console.warn(`[flow] media node ${nodeId} ("${label}") has no sendable URL — skipping`); return { label, isTemplate: false }; }
+      // When the node opts to send media standalone, drop the caption entirely.
+      const noCaption = !!(node!.data as { noCaption?: boolean }).noCaption;
+      const caption = noCaption ? undefined : (text || media.caption || undefined);
+      const displayUrl = media.assetId ? `/api/inventory/media/${media.assetId}` : (media.url ?? null);
+      const mime = media.mimeType || (media.type === 'video' ? 'video/mp4' : 'image/jpeg');
+
+      // A "clean" URL is a public, unsigned link (custom domain / r2.dev, or a
+      // pasted URL). WhatsApp's video fetcher accepts those by `link` but rejects
+      // signed presigned URLs — so only those need the upload-to-id path.
+      const cleanUrl = !!media.url || (!!media.assetId && r2HasPublicBase());
+
+      try {
+        // Video over a presigned (signed) URL → upload the bytes to WhatsApp for a
+        // media_id and send by id (validates once, clear error). Clean public URLs
+        // and all images use the simpler, proven link method.
+        let mediaId: string | undefined;
+        if (media.type === 'video' && !cleanUrl) {
+          const resp = await fetch(sendUrl);
+          if (!resp.ok) throw new Error(`couldn't fetch the stored video (${resp.status})`);
+          const up = await uploadMedia(await resp.arrayBuffer(), mime);
+          if (up?.id) mediaId = up.id;
+          else throw new Error(up?.error?.message || 'WhatsApp rejected the video — it must be MP4 (H.264 video + AAC audio), ≤16 MB');
+        }
+
+        const res = mediaId
+          ? await sendMediaMessage({ to, type: media.type, mediaId, caption })
+          : await sendMediaMessage({ to, type: media.type, mediaUrl: sendUrl, caption });
+        console.log(`[flow] ${media.type} sent for node ${nodeId} waId=${res?.messages?.[0]?.id ?? 'none'}`);
+        return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text: caption, media: { type: media.type, displayUrl, caption } };
+      } catch (e) {
+        // Don't halt the whole flow — log the reason and record a failed message
+        // in the inbox so the admin can see exactly why the media didn't send.
+        const reason = e instanceof Error ? e.message : 'send failed';
+        console.error(`[flow] media send failed for node ${nodeId} ("${label}"):`, reason);
+        return { label, isTemplate: false, text: `⚠ ${media.type} not sent — ${reason}` };
+      }
+    }
+
     if (!text) { console.warn(`[flow] text node ${nodeId} ("${label}") is empty — skipping send`); return { label, isTemplate: false, text: '' }; }
     const res = await sendTextMessage({ to, text });
     return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text };
@@ -156,7 +206,7 @@ async function runAutoChain(args: {
     await persistFlowMessage({
       msgId, conversationId: args.conversationId, bizPhone: args.bizPhone, phone: args.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(args.compiled, step.nextId);
@@ -204,24 +254,41 @@ export async function isTemplateLocked(templateName: string): Promise<{ flowName
 async function persistFlowMessage(opts: {
   msgId: string; conversationId: string | null; bizPhone: string; phone: string;
   status: 'sent' | 'failed';
-  // A template send (default) or a custom text message.
+  // A template send (default), a custom text message, or a media message.
   templateName?: string; text?: string; kind?: 'template' | 'text';
+  media?: { type: 'image' | 'video'; displayUrl: string | null; caption?: string };
 }) {
   if (!opts.conversationId) return;
-  const isText = opts.kind === 'text';
-  await db.insert(messages).values({
-    id:            opts.msgId,
+
+  const base = {
+    id:             opts.msgId,
     conversationId: opts.conversationId,
-    fromNumber:    opts.bizPhone,
-    toNumber:      opts.phone,
-    type:          isText ? 'text' : 'template',
-    templateName:  isText ? null : (opts.templateName ?? null),
-    text:          isText ? (opts.text ?? '') : `[Flow] ${opts.templateName ?? ''}`,
-    status:        opts.status,
-    isOutgoing:    true,
-    sentBy:        'flow',
-    sentAt:        new Date(),
-  }).onConflictDoNothing();
+    fromNumber:     opts.bizPhone,
+    toNumber:       opts.phone,
+    status:         opts.status,
+    isOutgoing:     true,
+    sentBy:         'flow' as const,
+    sentAt:         new Date(),
+  };
+
+  if (opts.media) {
+    await db.insert(messages).values({
+      ...base,
+      type:         opts.media.type,
+      mediaUrl:     opts.media.displayUrl,
+      mediaCaption: opts.media.caption ?? null,
+      text:         opts.media.caption ?? `[Flow ${opts.media.type}]`,
+    }).onConflictDoNothing();
+  } else {
+    const isText = opts.kind === 'text';
+    await db.insert(messages).values({
+      ...base,
+      type:         isText ? 'text' : 'template',
+      templateName: isText ? null : (opts.templateName ?? null),
+      text:         isText ? (opts.text ?? '') : `[Flow] ${opts.templateName ?? ''}`,
+    }).onConflictDoNothing();
+  }
+
   await db.update(conversations)
     .set({ updatedAt: new Date() })
     .where(eq(conversations.id, opts.conversationId))
@@ -347,7 +414,7 @@ export async function advanceRunOnButton(opts: {
     await persistFlowMessage({
       msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone, phone: opts.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(compiled, nextId);
@@ -421,7 +488,7 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
     await persistFlowMessage({
       msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, phone: run.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text,
+      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(compiled, nodeId);
