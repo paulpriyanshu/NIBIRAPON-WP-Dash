@@ -2,8 +2,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Loader2, Film, ImageIcon, Images, Play } from 'lucide-react';
+import { formatBytes, fetchMediaSize } from '@/components/media/mediaUtils';
 
-interface Item { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; description?: string; }
+interface Item { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; name?: string; bytes?: number; description?: string; }
 export interface PickedMedia { type: 'image' | 'video'; assetId?: string; url?: string; }
 
 /**
@@ -16,6 +17,13 @@ export default function MediaPicker({ onPick, onClose }: {
 }) {
   const [items, setItems] = useState<Item[] | null>(null);
   const [filter, setFilter] = useState<'all' | 'image' | 'video'>('all');
+  const [sizes, setSizes] = useState<Record<string, number | null>>({});
+
+  const ensureSize = (i: Item) => {
+    if (i.bytes !== undefined || sizes[i.key] !== undefined) return;
+    setSizes(s => ({ ...s, [i.key]: null }));
+    fetchMediaSize(i).then(b => setSizes(s => ({ ...s, [i.key]: b })));
+  };
 
   useEffect(() => {
     fetch('/api/media').then(r => (r.ok ? r.json() : [])).then(setItems).catch(() => setItems([]));
@@ -57,8 +65,11 @@ export default function MediaPicker({ onPick, onClose }: {
             </div>
           ) : (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2.5">
-              {list.map(i => (
-                <button key={i.key} onClick={() => pick(i)}
+              {list.map(i => {
+                const size = i.bytes ?? sizes[i.key];
+                return (
+                <button key={i.key} onClick={() => pick(i)} onMouseEnter={() => ensureSize(i)}
+                  title={`${i.name ?? ''}${size ? ` · ${formatBytes(size)}` : ''}`}
                   className="group relative aspect-square rounded-lg overflow-hidden bg-[#0b141a] border border-white/8 hover:border-[#25D366]/50 transition-all">
                   {i.type === 'video'
                     ? <video src={i.src} className="w-full h-full object-cover" muted preload="metadata" />
@@ -69,11 +80,16 @@ export default function MediaPicker({ onPick, onClose }: {
                       <div className="w-7 h-7 rounded-full bg-black/50 flex items-center justify-center"><Play size={12} className="text-white ml-0.5" /></div>
                     </div>
                   )}
+                  {/* name + size on hover */}
+                  <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/85 to-transparent opacity-0 group-hover:opacity-100 transition-opacity text-left">
+                    {i.name && <p className="text-[9px] text-white/95 truncate font-medium">{i.name}</p>}
+                    <p className="text-[8px] text-white/60">{size ? formatBytes(size) : '…'}</p>
+                  </div>
                   <span className="absolute top-1 right-1 text-[8px] px-1 py-0.5 rounded-full bg-black/55 text-white/80 flex items-center gap-0.5">
                     {i.type === 'video' ? <Film size={8} /> : <ImageIcon size={8} />}
                   </span>
                 </button>
-              ))}
+              );})}
             </div>
           )}
         </div>

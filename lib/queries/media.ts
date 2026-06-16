@@ -14,6 +14,8 @@ export interface MediaItem {
   src: string;          // browser-renderable URL (R2 proxy or pasted URL)
   assetId?: string;
   url?: string;
+  name?: string;        // friendly name (original filename, or derived from the key)
+  bytes?: number;       // file size when known (else looked up on hover)
   description?: string;
   createdAt?: number;   // for ordering library uploads (newest first)
   usages: MediaUsage[];
@@ -21,6 +23,13 @@ export interface MediaItem {
 
 function srcOf(assetId?: string, url?: string): string {
   return assetId ? `/api/inventory/media/${assetId}` : (url ?? '');
+}
+
+/** Derive a display name from an R2 key or URL (the last path segment). */
+function nameOf(assetId?: string, url?: string): string {
+  const s = (assetId || url || '').split('?')[0];
+  const base = s.split('/').pop() || s;
+  try { return decodeURIComponent(base); } catch { return base; }
 }
 
 /**
@@ -31,18 +40,24 @@ export async function getAllMedia(): Promise<MediaItem[]> {
   const map = new Map<string, MediaItem>();
 
   const add = (
-    m: { type: 'image' | 'video'; assetId?: string; url?: string; description?: string; createdAt?: number },
+    m: { type: 'image' | 'video'; assetId?: string; url?: string; description?: string; createdAt?: number; name?: string; bytes?: number },
     usage?: MediaUsage,
   ) => {
     const key = m.assetId || m.url;
     if (!key) return;
     let item = map.get(key);
     if (!item) {
-      item = { key, type: m.type, src: srcOf(m.assetId, m.url), assetId: m.assetId, url: m.url, description: m.description || undefined, createdAt: m.createdAt, usages: [] };
+      item = {
+        key, type: m.type, src: srcOf(m.assetId, m.url), assetId: m.assetId, url: m.url,
+        name: m.name || nameOf(m.assetId, m.url), bytes: m.bytes,
+        description: m.description || undefined, createdAt: m.createdAt, usages: [],
+      };
       map.set(key, item);
     }
     if (!item.description && m.description) item.description = m.description;
     if (item.createdAt === undefined && m.createdAt !== undefined) item.createdAt = m.createdAt;
+    if (item.bytes === undefined && m.bytes !== undefined && m.bytes !== null) item.bytes = m.bytes;
+    if (m.name && (!item.name || item.name === nameOf(item.assetId, item.url))) item.name = m.name;
     if (usage) item.usages.push(usage);
   };
 
@@ -92,6 +107,8 @@ export async function getAllMedia(): Promise<MediaItem[]> {
         type: r.type === 'video' ? 'video' : 'image',
         assetId: r.assetId ?? undefined,
         url: r.url ?? undefined,
+        name: r.filename ?? undefined,
+        bytes: r.bytes ?? undefined,
         description: r.description ?? undefined,
         createdAt: r.createdAt ? new Date(r.createdAt).getTime() : undefined,
       });

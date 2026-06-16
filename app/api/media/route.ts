@@ -14,7 +14,7 @@ export async function GET() {
 // Record uploaded library media (R2 asset or pasted URL) so it shows in the tab.
 export async function POST(req: NextRequest) {
   try {
-    const { assetId, url, type, description } = await req.json();
+    const { assetId, url, type, description, filename, bytes } = await req.json();
     if (!assetId && !url) {
       return NextResponse.json({ error: 'assetId or url is required' }, { status: 400 });
     }
@@ -22,6 +22,8 @@ export async function POST(req: NextRequest) {
       assetId:     assetId || null,
       url:         url || null,
       type:        type === 'video' ? 'video' : 'image',
+      filename:    filename || null,
+      bytes:       Number.isFinite(bytes) ? bytes : null,
       description: description || null,
     }).returning({ id: mediaAssets.id });
     return NextResponse.json({ id: row.id }, { status: 201 });

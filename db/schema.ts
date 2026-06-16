@@ -462,6 +462,8 @@ export const mediaAssets = pgTable('media_assets', {
   assetId:     text('asset_id'),   // R2 object key (uploaded)
   url:         text('url'),        // or a pasted public URL
   type:        varchar('type', { length: 10 }).notNull().default('image'), // 'image' | 'video'
+  filename:    text('filename'),   // original upload name (for display)
+  bytes:       integer('bytes'),   // file size in bytes (for display)
   description: text('description'),
   createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

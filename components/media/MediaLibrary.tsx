@@ -5,9 +5,10 @@ import {
   Images, Film, ImageIcon, X, ChevronLeft, ChevronRight,
   Package, Tags, GitBranch, Play, Upload, Loader2,
 } from 'lucide-react';
+import { formatBytes, fetchMediaSize } from './mediaUtils';
 
 interface MediaUsage { kind: 'product' | 'category' | 'flow'; label: string; href: string; }
-interface MediaItem { key: string; type: 'image' | 'video'; src: string; description?: string; usages: MediaUsage[]; }
+interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; name?: string; bytes?: number; description?: string; usages: MediaUsage[]; }
 
 const USAGE_ICON = { product: Package, category: Tags, flow: GitBranch } as const;
 const USAGE_LABEL = { product: 'Product', category: 'Category', flow: 'Flow' } as const;
@@ -22,8 +23,16 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
   const [uploading, setUploading] = useState(0);   // count of in-flight uploads
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
+  const [sizes, setSizes] = useState<Record<string, number | null>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+
+  // Lazily resolve a media item's size (server lookup) the first time it's hovered.
+  const ensureSize = useCallback((m: MediaItem) => {
+    if (m.bytes !== undefined || sizes[m.key] !== undefined) return;
+    setSizes(s => ({ ...s, [m.key]: null }));
+    fetchMediaSize(m).then(b => setSizes(s => ({ ...s, [m.key]: b })));
+  }, [sizes]);
 
   const list = items.filter(i => filter === 'all' || i.type === filter);
   const imgCount = items.filter(i => i.type === 'image').length;
@@ -46,6 +55,9 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
 
   const setFilterSafe = (f: 'all' | 'image' | 'video') => { setOpen(null); setFilter(f); };
   const current = open !== null ? list[open] : null;
+
+  // Resolve size for the open item if not already known.
+  useEffect(() => { if (current) ensureSize(current); }, [open, current, ensureSize]);
 
   const reload = useCallback(async () => {
     try {
@@ -147,8 +159,11 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-            {list.map((m, i) => (
-              <button key={m.key} onClick={() => setOpen(i)}
+            {list.map((m, i) => {
+              const size = m.bytes ?? sizes[m.key];
+              return (
+              <button key={m.key} onClick={() => setOpen(i)} onMouseEnter={() => ensureSize(m)}
+                title={`${m.name ?? ''}${size ? ` · ${formatBytes(size)}` : ''}`}
                 className="group relative aspect-square rounded-xl overflow-hidden bg-[#1f2c34] border border-white/8 hover:border-[#25D366]/40 transition-all">
                 {m.type === 'video'
                   ? <video src={m.src} className="w-full h-full object-cover" muted preload="metadata" />
@@ -161,15 +176,18 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
                   </div>
                 )}
 
-                {/* bottom gradient + usage count */}
-                <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                  <span className="text-[10px] text-white/90">{m.usages.length} use{m.usages.length !== 1 ? 's' : ''}</span>
+                {/* bottom gradient — name, size & usage count on hover */}
+                <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity text-left">
+                  {m.name && <p className="text-[10px] text-white/95 truncate font-medium">{m.name}</p>}
+                  <p className="text-[9px] text-white/60">
+                    {size ? formatBytes(size) : '…'} · {m.usages.length} use{m.usages.length !== 1 ? 's' : ''}
+                  </p>
                 </div>
                 <span className="absolute top-1.5 right-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white/80 flex items-center gap-0.5">
                   {m.type === 'video' ? <Film size={9} /> : <ImageIcon size={9} />}
                 </span>
               </button>
-            ))}
+            );})}
           </div>
         )}
       </div>
@@ -204,6 +222,13 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
           {/* details */}
           <div className="shrink-0 max-h-[34%] overflow-y-auto px-5 py-4 border-t border-white/10 bg-[#0b141a]/60" onClick={e => e.stopPropagation()}>
             <div className="max-w-3xl mx-auto space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                {current.name && <span className="text-white font-medium text-sm break-all">{current.name}</span>}
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/60 uppercase">{current.type}</span>
+                {(current.bytes ?? sizes[current.key]) != null
+                  ? <span className="text-white/50 text-xs">{formatBytes(current.bytes ?? sizes[current.key])}</span>
+                  : <span className="text-white/30 text-xs">size…</span>}
+              </div>
               {current.description && <p className="text-white/70 text-sm">{current.description}</p>}
               <div>
                 <p className="text-white/35 text-[10px] uppercase tracking-wider mb-1.5">Used in {current.usages.length} place{current.usages.length !== 1 ? 's' : ''}</p>

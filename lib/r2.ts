@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 
@@ -77,6 +77,16 @@ export async function presignPut(mimeType: string, expiresIn = 600): Promise<{ k
 
 export async function deleteObject(key: string): Promise<void> {
   await client().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+}
+
+/** Byte size of a stored object (HeadObject → ContentLength), or null. */
+export async function objectSize(key: string): Promise<number | null> {
+  try {
+    const r = await client().send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+    return typeof r.ContentLength === 'number' ? r.ContentLength : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
