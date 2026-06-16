@@ -453,6 +453,21 @@ export const catalogProducts = pgTable('catalog_products', {
   index('catalog_products_in_agent_idx').on(t.inAgentContext),
 ]);
 
+// ─── Media library ─────────────────────────────────────────────────────────
+// Standalone media (photos/videos) uploaded in the Media tab. Media attached to
+// products/categories/flows is tracked there; this table holds library uploads
+// that may not (yet) be referenced anywhere.
+export const mediaAssets = pgTable('media_assets', {
+  id:          uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  assetId:     text('asset_id'),   // R2 object key (uploaded)
+  url:         text('url'),        // or a pasted public URL
+  type:        varchar('type', { length: 10 }).notNull().default('image'), // 'image' | 'video'
+  description: text('description'),
+  createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('media_assets_created_idx').on(t.createdAt),
+]);
+
 export const categoriesRelations = relations(categories, ({ many }) => ({
   products: many(catalogProducts),
 }));

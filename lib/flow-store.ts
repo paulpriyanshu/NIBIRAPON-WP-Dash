@@ -23,7 +23,15 @@ async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise
   const p = flow.templateParams?.[nodeId] ?? { bodyParams: [] };
   const { isMPM, isCatalog } = templateKindFlags(t);
 
-  const payload = configToSendPayload(to, info.name, info.language, { ...p, isMPM, isCatalog });
+  // Header media uploaded/picked from the library is stored as an R2 asset key —
+  // resolve it to a fetchable URL (the link WhatsApp pulls). A pasted URL wins if set.
+  const headerMediaUrl = p.headerMediaUrl?.trim()
+    || (p.headerMediaAssetId ? await getSendUrl(p.headerMediaAssetId) : undefined);
+  // Match the parameter type to the template's header format (image/video/document).
+  const headerFormat = t.components.find(c => c.type === 'HEADER')?.format;
+  const headerMediaType = headerFormat === 'VIDEO' ? 'video' : headerFormat === 'DOCUMENT' ? 'document' : 'image';
+
+  const payload = configToSendPayload(to, info.name, info.language, { ...p, headerMediaUrl, headerMediaType, isMPM, isCatalog });
   const res = payload.kind === 'mpm'
     ? await sendMPMTemplateMessage(payload.args)
     : await sendRichTemplateMessage(payload.args);

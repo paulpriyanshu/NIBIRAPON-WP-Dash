@@ -1,6 +1,8 @@
 import { getAllInventory, getAllCategories } from '@/lib/queries/inventory';
 import { flowsColl } from '@/lib/flow-store';
-import type { ProductMedia } from '@/db/schema';
+import { db } from '@/db';
+import { mediaAssets, type ProductMedia } from '@/db/schema';
+import { desc } from 'drizzle-orm';
 
 /** Where a media asset is used across the app. */
 export interface MediaUsage { kind: 'product' | 'category' | 'flow'; label: string; href: string; }
@@ -13,6 +15,7 @@ export interface MediaItem {
   assetId?: string;
   url?: string;
   description?: string;
+  createdAt?: number;   // for ordering library uploads (newest first)
   usages: MediaUsage[];
 }
 
@@ -28,18 +31,19 @@ export async function getAllMedia(): Promise<MediaItem[]> {
   const map = new Map<string, MediaItem>();
 
   const add = (
-    m: { type: 'image' | 'video'; assetId?: string; url?: string; description?: string },
-    usage: MediaUsage,
+    m: { type: 'image' | 'video'; assetId?: string; url?: string; description?: string; createdAt?: number },
+    usage?: MediaUsage,
   ) => {
     const key = m.assetId || m.url;
     if (!key) return;
     let item = map.get(key);
     if (!item) {
-      item = { key, type: m.type, src: srcOf(m.assetId, m.url), assetId: m.assetId, url: m.url, description: m.description || undefined, usages: [] };
+      item = { key, type: m.type, src: srcOf(m.assetId, m.url), assetId: m.assetId, url: m.url, description: m.description || undefined, createdAt: m.createdAt, usages: [] };
       map.set(key, item);
     }
     if (!item.description && m.description) item.description = m.description;
-    item.usages.push(usage);
+    if (item.createdAt === undefined && m.createdAt !== undefined) item.createdAt = m.createdAt;
+    if (usage) item.usages.push(usage);
   };
 
   // Products → each photo/video in their media array.
@@ -79,6 +83,21 @@ export async function getAllMedia(): Promise<MediaItem[]> {
     }
   } catch { /* ignore */ }
 
-  // Most-referenced first.
-  return [...map.values()].sort((a, b) => b.usages.length - a.usages.length);
+  // Library uploads (Media tab) — so media not yet attached anywhere still shows.
+  try {
+    const rows = await db.select().from(mediaAssets).orderBy(desc(mediaAssets.createdAt));
+    for (const r of rows) {
+      if (!r.assetId && !r.url) continue;
+      add({
+        type: r.type === 'video' ? 'video' : 'image',
+        assetId: r.assetId ?? undefined,
+        url: r.url ?? undefined,
+        description: r.description ?? undefined,
+        createdAt: r.createdAt ? new Date(r.createdAt).getTime() : undefined,
+      });
+    }
+  } catch { /* ignore */ }
+
+  // Most-referenced first, then newest uploads.
+  return [...map.values()].sort((a, b) => (b.usages.length - a.usages.length) || ((b.createdAt ?? 0) - (a.createdAt ?? 0)));
 }

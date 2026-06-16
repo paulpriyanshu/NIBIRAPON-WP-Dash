@@ -1,14 +1,17 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, Play, Pause, Send, Loader2, Users, CheckCircle2,
   Megaphone, AlertTriangle, RefreshCw, Layers, ChevronDown, ChevronUp, X, ShoppingBag,
+  ImagePlus, Images, Trash2,
 } from 'lucide-react';
 import {
   findRootNodes, getTemplate, flowParamSpecs, specNeedsConfig,
   type Flow as EngineFlow, type NodeParams, type TemplateParamSpec,
 } from '@/lib/flow-engine';
 import type { TemplateMessage, TemplateMessageConfig } from '@/lib/templates';
+
+interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; }
 
 interface Flow extends EngineFlow {
   _id: string;
@@ -25,6 +28,7 @@ function emptyParams(s: TemplateParamSpec, saved?: NodeParams): NodeParams {
     bodyParams: Array.from({ length: s.bodyParams }, (_, i) => saved?.bodyParams?.[i] ?? ''),
     headerParam: saved?.headerParam ?? '',
     headerMediaUrl: saved?.headerMediaUrl ?? '',
+    headerMediaAssetId: saved?.headerMediaAssetId ?? '',
     thumbnailProductRetailerId: saved?.thumbnailProductRetailerId ?? '',
     mpmSections: saved?.mpmSections?.length ? saved.mpmSections : [{ title: '', productIds: '' }],
   };
@@ -36,12 +40,133 @@ function paramsFromConfig(s: TemplateParamSpec, cfg: TemplateMessageConfig): Nod
     bodyParams: Array.from({ length: s.bodyParams }, (_, i) => cfg.bodyParams?.[i] ?? ''),
     headerParam: cfg.headerParam ?? '',
     headerMediaUrl: cfg.headerMediaUrl ?? '',
+    headerMediaAssetId: cfg.headerMediaAssetId ?? '',
     thumbnailProductRetailerId: cfg.thumbnailProductRetailerId ?? '',
     mpmSections: cfg.mpmSections?.length ? cfg.mpmSections : [{ title: '', productIds: '' }],
   };
 }
 
-function FlowCard({ flow, onChanged, savedMessages }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[] }) {
+/**
+ * Header media picker for a template launch param. Three ways to set the header
+ * image/video: upload a file (→ R2, stored as an asset key), pick one from the
+ * Media library, or paste a public URL (kept as-is). Upload/library set
+ * headerMediaAssetId (resolved to a fetchable link at send time); a pasted URL
+ * sets headerMediaUrl. Each input clears the other so only one source wins.
+ */
+function HeaderMediaField({ spec, v, patch, media }: {
+  spec: TemplateParamSpec;
+  v: NodeParams;
+  patch: (fn: (p: NodeParams) => NodeParams) => void;
+  media: MediaItem[];
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState('');
+  const [showLib, setShowLib] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const fmt = (spec.headerFormat ?? 'IMAGE').toUpperCase();
+  const previewType: 'image' | 'video' = fmt === 'VIDEO' ? 'video' : 'image';
+  const accept = fmt === 'VIDEO' ? 'video/*' : fmt === 'DOCUMENT' ? 'application/pdf,image/*' : 'image/*';
+
+  const currentSrc = v.headerMediaAssetId ? `/api/inventory/media/${v.headerMediaAssetId}` : (v.headerMediaUrl ?? '');
+  const hasMedia = !!(v.headerMediaAssetId || v.headerMediaUrl?.trim());
+  const libItems = media.filter(m => m.type === previewType);
+
+  const setAsset = (assetId: string) => patch(p => ({ ...p, headerMediaAssetId: assetId, headerMediaUrl: '' }));
+  const setUrl   = (url: string)     => patch(p => ({ ...p, headerMediaUrl: url, headerMediaAssetId: '' }));
+  const clear    = ()                => patch(p => ({ ...p, headerMediaUrl: '', headerMediaAssetId: '' }));
+
+  const onFile = async (file?: File) => {
+    if (!file) return;
+    setErr(''); setUploading(true);
+    try {
+      const signRes = await fetch('/api/inventory/upload', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mimeType: file.type }),
+      });
+      const sign = await signRes.json();
+      if (!signRes.ok || !sign.uploadUrl) throw new Error(sign.error || 'upload failed');
+      const put = await fetch(sign.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
+      if (!put.ok) throw new Error(`upload failed (${put.status})`);
+      setAsset(sign.assetId);
+      setShowLib(false);
+      // Record it in the Media library so it shows in the Media tab and can be re-picked.
+      fetch('/api/media', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: sign.assetId, type: previewType }),
+      }).catch(() => {});
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'upload failed');
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <label className="text-white/40 text-[10px] uppercase tracking-wider block">{fmt.toLowerCase()} header</label>
+
+      {hasMedia && (
+        <div className="flex gap-2 bg-[#0b141a] border border-white/8 rounded-lg p-1.5">
+          <div className="w-12 h-12 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+            {previewType === 'video'
+              ? <video src={currentSrc} className="w-full h-full object-cover" muted />
+              // eslint-disable-next-line @next/next/no-img-element
+              : <img src={currentSrc} alt="" className="w-full h-full object-cover" />}
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col justify-center">
+            <span className="text-white/60 text-[10px]">{previewType} · {v.headerMediaAssetId ? 'uploaded' : 'url'}</span>
+            <span className="text-white/25 text-[9px] truncate">{currentSrc}</span>
+          </div>
+          <button onClick={clear} className="p-1 rounded text-white/25 hover:text-red-400 hover:bg-red-500/10 self-start">
+            <Trash2 size={12} />
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-1.5">
+        <input ref={fileRef} type="file" accept={accept} hidden onChange={e => onFile(e.target.files?.[0])} />
+        <button onClick={() => fileRef.current?.click()} disabled={uploading}
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-40 transition-all">
+          {uploading ? <Loader2 size={10} className="animate-spin" /> : <ImagePlus size={10} />}
+          {uploading ? 'Uploading…' : 'Upload'}
+        </button>
+        <button onClick={() => setShowLib(s => !s)}
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all">
+          <Images size={10} /> From library
+        </button>
+      </div>
+
+      {showLib && (
+        libItems.length === 0
+          ? <p className="text-white/30 text-[10px]">No {previewType}s in the library yet.</p>
+          : <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto p-1 bg-[#0b141a] border border-white/8 rounded-lg">
+              {libItems.map(m => {
+                const selected = (!!m.assetId && m.assetId === v.headerMediaAssetId) || (!!m.url && m.url === v.headerMediaUrl);
+                return (
+                  <button key={m.key} onClick={() => { if (m.assetId) setAsset(m.assetId); else setUrl(m.url ?? ''); setShowLib(false); }}
+                    className={`aspect-square rounded-md overflow-hidden border-2 transition-all ${selected ? 'border-[#25D366]' : 'border-transparent hover:border-white/30'}`}>
+                    {m.type === 'video'
+                      ? <video src={m.src} className="w-full h-full object-cover" muted />
+                      // eslint-disable-next-line @next/next/no-img-element
+                      : <img src={m.src} alt="" className="w-full h-full object-cover" />}
+                  </button>
+                );
+              })}
+            </div>
+      )}
+
+      {/* Paste a public URL — kept as the original option. */}
+      <input value={v.headerMediaUrl ?? ''} onChange={e => setUrl(e.target.value)}
+        placeholder={`or paste ${fmt.toLowerCase()} URL (https://…)`} className={inputCls} />
+
+      {err && <p className="text-red-400 text-[10px]">{err}</p>}
+    </div>
+  );
+}
+
+function FlowCard({ flow, onChanged, savedMessages, media }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[] }) {
   const roots = findRootNodes(flow);
   const specs = flowParamSpecs(flow);
   const isLive = flow.status === 'live';
@@ -83,7 +208,7 @@ function FlowCard({ flow, onChanged, savedMessages }: { flow: Flow; onChanged: (
       const v = tp[s.nodeId]; if (!v) continue;
       if (s.bodyParams > 0 && v.bodyParams.some(x => !x.trim())) missing.push(s.templateName);
       if (s.headerTextParams > 0 && !v.headerParam?.trim()) missing.push(`${s.templateName} (header)`);
-      if (s.needsHeaderMedia && !v.headerMediaUrl?.trim()) missing.push(`${s.templateName} (media)`);
+      if (s.needsHeaderMedia && !v.headerMediaUrl?.trim() && !v.headerMediaAssetId?.trim()) missing.push(`${s.templateName} (media)`);
       if (s.isMPM && (!v.thumbnailProductRetailerId?.trim() || !v.mpmSections?.some(m => m.productIds.trim()))) missing.push(`${s.templateName} (products)`);
       if (s.isCatalog && !v.thumbnailProductRetailerId?.trim()) missing.push(`${s.templateName} (thumbnail)`);
     }
@@ -248,8 +373,8 @@ function FlowCard({ flow, onChanged, savedMessages }: { flow: Flow; onChanged: (
                         placeholder={`Body variable {{${i + 1}}}`} className={inputCls} />
                     ))}
                     {s.needsHeaderMedia && (
-                      <input value={v.headerMediaUrl ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, headerMediaUrl: e.target.value }))}
-                        placeholder={`${(s.headerFormat ?? 'media').toLowerCase()} header URL (https://…)`} className={inputCls} />
+                      <HeaderMediaField spec={s} v={v} media={media}
+                        patch={fn => patch(s.nodeId, fn)} />
                     )}
                     {(s.isMPM || s.isCatalog) && (
                       <input value={v.thumbnailProductRetailerId ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, thumbnailProductRetailerId: e.target.value }))}
@@ -288,6 +413,7 @@ export default function ActiveFlowsPanel() {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
   const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
+  const [media, setMedia] = useState<MediaItem[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -298,6 +424,7 @@ export default function ActiveFlowsPanel() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     fetch('/api/template-messages').then(r => r.ok ? r.json() : []).then(setSavedMessages).catch(() => {});
+    fetch('/api/media').then(r => r.ok ? r.json() : []).then(setMedia).catch(() => {});
   }, []);
 
   const liveCount = flows.filter(f => f.status === 'live').length;
@@ -337,7 +464,7 @@ export default function ActiveFlowsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} />)}
+            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} media={media} />)}
           </div>
         )}
       </div>

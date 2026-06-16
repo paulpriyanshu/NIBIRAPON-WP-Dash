@@ -2,7 +2,8 @@
 import { useState, useRef } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import { MessageSquare, X, ImagePlus, Loader2, Film, Trash2, Link2 } from 'lucide-react';
+import { MessageSquare, X, ImagePlus, Loader2, Film, Trash2, Link2, Images } from 'lucide-react';
+import MediaPicker from './MediaPicker';
 
 interface FlowMedia { type: 'image' | 'video'; assetId?: string; url?: string; mimeType?: string; bytes?: number; }
 
@@ -25,6 +26,7 @@ export default function TextNode({ id, data, selected }: NodeProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [showUrl, setShowUrl] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const [urlValue, setUrlValue] = useState('');
   const [urlType, setUrlType] = useState<'image' | 'video'>('image');
   const fileRef = useRef<HTMLInputElement>(null);
@@ -137,11 +139,21 @@ export default function TextNode({ id, data, selected }: NodeProps) {
                 {uploading ? <Loader2 size={10} className="animate-spin" /> : <ImagePlus size={10} />}
                 {uploading ? 'Uploading…' : 'Attach'}
               </button>
+              <button onClick={() => setShowLibrary(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all nodrag">
+                <Images size={10} /> Library
+              </button>
               <button onClick={() => setShowUrl(s => !s)}
                 className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all nodrag">
                 <Link2 size={10} /> URL
               </button>
             </div>
+          )}
+          {showLibrary && (
+            <MediaPicker
+              onPick={m => updateNodeData(id, { media: { type: m.type, assetId: m.assetId, url: m.url } })}
+              onClose={() => setShowLibrary(false)}
+            />
           )}
           {showUrl && !media && (
             <div className="flex items-center gap-1 nodrag">

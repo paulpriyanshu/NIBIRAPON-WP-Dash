@@ -9,7 +9,8 @@ import type { MPMSection } from '@/lib/whatsapp-api';
 export interface TemplateMessageConfig {
   bodyParams?: string[];
   headerParam?: string;        // header TEXT {{1}}
-  headerMediaUrl?: string;     // header IMAGE/VIDEO/DOCUMENT link
+  headerMediaUrl?: string;     // header IMAGE/VIDEO/DOCUMENT link (pasted public URL)
+  headerMediaAssetId?: string; // R2 asset key — resolved to a fetchable URL at send time
   headerMediaType?: 'image' | 'video' | 'document';
   buttonParams?: string[];     // dynamic URL-button suffixes
   thumbnailProductRetailerId?: string;

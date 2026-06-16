@@ -1,9 +1,9 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   Images, Film, ImageIcon, X, ChevronLeft, ChevronRight,
-  Package, Tags, GitBranch, Play,
+  Package, Tags, GitBranch, Play, Upload, Loader2,
 } from 'lucide-react';
 
 interface MediaUsage { kind: 'product' | 'category' | 'flow'; label: string; href: string; }
@@ -12,9 +12,18 @@ interface MediaItem { key: string; type: 'image' | 'video'; src: string; descrip
 const USAGE_ICON = { product: Package, category: Tags, flow: GitBranch } as const;
 const USAGE_LABEL = { product: 'Product', category: 'Category', flow: 'Flow' } as const;
 
-export default function MediaLibrary({ items }: { items: MediaItem[] }) {
+const MAX_IMAGE = 5   * 1024 * 1024;
+const MAX_VIDEO = 100 * 1024 * 1024;
+
+export default function MediaLibrary({ items: initialItems }: { items: MediaItem[] }) {
+  const [items, setItems] = useState<MediaItem[]>(initialItems);
   const [filter, setFilter] = useState<'all' | 'image' | 'video'>('all');
   const [open, setOpen] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(0);   // count of in-flight uploads
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
 
   const list = items.filter(i => filter === 'all' || i.type === filter);
   const imgCount = items.filter(i => i.type === 'image').length;
@@ -38,19 +47,84 @@ export default function MediaLibrary({ items }: { items: MediaItem[] }) {
   const setFilterSafe = (f: 'all' | 'image' | 'video') => { setOpen(null); setFilter(f); };
   const current = open !== null ? list[open] : null;
 
+  const reload = useCallback(async () => {
+    try {
+      const res = await fetch('/api/media');
+      if (res.ok) setItems(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  // Upload photos/videos straight to R2, record them, then refresh the gallery.
+  const uploadFiles = useCallback(async (files: FileList | File[] | null) => {
+    const arr = files ? Array.from(files) : [];
+    if (!arr.length) return;
+    setError('');
+    for (const file of arr) {
+      const isVideo = file.type.startsWith('video');
+      if (!isVideo && !file.type.startsWith('image')) { setError(`${file.name}: only images or videos`); continue; }
+      const max = isVideo ? MAX_VIDEO : MAX_IMAGE;
+      if (file.size > max) { setError(`${file.name}: too large (max ${Math.round(max / 1024 / 1024)}MB)`); continue; }
+      setUploading(n => n + 1);
+      try {
+        const signRes = await fetch('/api/inventory/upload', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mimeType: file.type }),
+        });
+        const sign = await signRes.json();
+        if (!signRes.ok || !sign.uploadUrl) throw new Error(sign.error || 'upload failed');
+        const put = await fetch(sign.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
+        if (!put.ok) throw new Error(`upload failed (${put.status})`);
+        await fetch('/api/media', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: sign.assetId, type: isVideo ? 'video' : 'image' }),
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'upload failed');
+      } finally {
+        setUploading(n => n - 1);
+      }
+    }
+    if (fileRef.current) fileRef.current.value = '';
+    await reload();
+  }, [reload]);
+
+  /* whole-window drag & drop */
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const onDragEnter = (e: React.DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current++; setDragging(true); };
+  const onDragOver  = (e: React.DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
+  const onDragLeave = (e: React.DragEvent) => { if (!hasFiles(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDragging(false); };
+  const onDrop = (e: React.DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current = 0; setDragging(false); uploadFiles(e.dataTransfer.files); };
+
   return (
-    <div className="h-full flex flex-col bg-[#0b141a] overflow-hidden">
+    <div className="h-full flex flex-col bg-[#0b141a] overflow-hidden relative"
+      onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {dragging && (
+        <div className="absolute inset-0 z-50 bg-[#0b141a]/85 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="border-2 border-dashed border-[#25D366]/60 rounded-3xl px-10 py-8 text-center">
+            <Upload size={36} className="mx-auto mb-3 text-[#25D366]" />
+            <p className="text-white font-semibold text-sm">Drop images or videos to upload</p>
+            <p className="text-white/40 text-xs mt-1">They’ll be added to your media library</p>
+          </div>
+        </div>
+      )}
       {/* header */}
       <div className="px-6 pt-6 pb-0 border-b border-white/8 shrink-0">
         <div className="flex items-center gap-3 pb-4">
           <div className="w-9 h-9 bg-[#25D366]/15 rounded-xl flex items-center justify-center">
             <Images size={18} className="text-[#25D366]" />
           </div>
-          <div>
+          <div className="flex-1 min-w-0">
             <h1 className="text-white font-bold text-lg">Media</h1>
             <p className="text-white/40 text-xs">{items.length} file{items.length !== 1 ? 's' : ''} · {imgCount} image{imgCount !== 1 ? 's' : ''} · {vidCount} video{vidCount !== 1 ? 's' : ''}</p>
           </div>
+          <input ref={fileRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => uploadFiles(e.target.files)} />
+          <button onClick={() => fileRef.current?.click()} disabled={uploading > 0}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] disabled:opacity-50 transition-all shrink-0">
+            {uploading > 0 ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            {uploading > 0 ? `Uploading ${uploading}…` : 'Add media'}
+          </button>
         </div>
+        {error && <p className="text-red-400 text-[11px] pb-2">{error}</p>}
         <div className="flex gap-1">
           {([['all', 'All', Images], ['image', 'Images', ImageIcon], ['video', 'Videos', Film]] as const).map(([key, label, Icon]) => (
             <button key={key} onClick={() => setFilterSafe(key)}
@@ -69,7 +143,7 @@ export default function MediaLibrary({ items }: { items: MediaItem[] }) {
           <div className="text-center py-20 text-white/20">
             <Images size={32} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm">No media yet</p>
-            <p className="text-xs mt-1 text-white/15">Photos and videos used in products, categories and flows show up here</p>
+            <p className="text-xs mt-1 text-white/15">Drag &amp; drop or use “Add media” to upload — media used in products, categories &amp; flows also appears here</p>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">

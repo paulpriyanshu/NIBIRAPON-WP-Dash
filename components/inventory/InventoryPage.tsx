@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useInfiniteList } from '@/hooks/useInfiniteList';
 import {
   Package, Plus, Trash2, Pencil, Check, Loader2,
-  ChevronDown, ChevronUp, Layers, Calendar, StickyNote,
+  ChevronDown, ChevronUp, StickyNote,
   Upload, Link2, ImageIcon, Film, Bot, Tags, GitBranch, X,
 } from 'lucide-react';
 import { inputCls } from './shared';
@@ -334,38 +334,41 @@ function ProductFormCard({ initial, onSave, onCancel, loading, categories, paren
   );
 }
 
-/* ── Variant chips ───────────────────────────────────────────────── */
-
-function VariantChips({ attrs }: { attrs: VariantAttribute[] }) {
-  if (!attrs?.length) return null;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {attrs.map((a, i) => (
-        <span key={i} className="text-[9px] bg-white/8 text-white/45 px-1.5 py-0.5 rounded-full">
-          {a.label}: <span className="text-white/70">{a.value}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 /* ── Main page ───────────────────────────────────────────────────── */
+
+/** What the right-hand editor pane is showing. */
+type Selection =
+  | { mode: 'new' }
+  | { mode: 'new-variant'; parentId: string; parentName: string }
+  | { mode: 'edit'; id: string }
+  | null;
 
 export default function InventoryPage({ initialItems = [], initialCursor = null }: {
   initialItems?: Product[];
   initialCursor?: string | null;
 }) {
-  const { items: products, setItems: setProducts, loading, hasMore, reload, sentinelRef } =
+  const { items: products, loading, hasMore, reload, sentinelRef } =
     useInfiniteList<Product>({ endpoint: '/api/inventory', limit: 30, initialItems, initialCursor });
 
   const [tab, setTab] = useState<'products' | 'categories'>('products');
   const [categories, setCategories] = useState<Category[]>([]);
 
-  const [showForm, setShowForm]   = useState(false);
-  const [editId,   setEditId]     = useState<string | null>(null);
-  const [saving,   setSaving]     = useState(false);
-  const [expanded, setExpanded]   = useState<string | null>(null);
-  const [variantParent, setVariantParent] = useState<{ id: string; name: string } | null>(null);
+  const [saving,    setSaving]    = useState(false);
+  const [selection, setSelection] = useState<Selection>(null);
+  const [expanded,  setExpanded]  = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) =>
+    setExpanded(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  /** Find a product or variant anywhere in the loaded list. */
+  const findProduct = (id: string): Product | undefined => {
+    for (const p of products) {
+      if (p.id === id) return p;
+      const v = p.variants?.find(x => x.id === id);
+      if (v) return v;
+    }
+    return undefined;
+  };
 
   const loadCategories = useCallback(async () => {
     try {
@@ -381,19 +384,20 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
   const addProduct = async (data: ProductForm) => {
     setSaving(true);
     await fetch('/api/inventory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setShowForm(false); setVariantParent(null); reload();
+    setSaving(false); setSelection(null); reload();
   };
 
   const updateProduct = async (id: string, data: ProductForm) => {
     setSaving(true);
     await fetch(`/api/inventory/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-    setSaving(false); setEditId(null); reload();
+    setSaving(false); reload();
   };
 
   const deleteProduct = async (id: string) => {
     if (!confirm('Delete this product from inventory? Its variants will also be removed.')) return;
     await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
-    setProducts(prev => prev.filter(p => p.id !== id));
+    setSelection(s => (s?.mode === 'edit' && s.id === id) ? null : s);
+    reload();
   };
 
   const variantInitial = (p: Product): Partial<ProductForm> => ({
@@ -430,7 +434,7 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
             </div>
           </div>
           {tab === 'products' && (
-            <button onClick={() => { setShowForm(true); setEditId(null); setVariantParent(null); }}
+            <button onClick={() => setSelection({ mode: 'new' })}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] transition-all">
               <Plus size={14} /> Add Product
             </button>
@@ -451,201 +455,193 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
       </div>
 
       {/* body */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        {tab === 'categories' ? (
+      {tab === 'categories' ? (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
           <CategoriesPanel categories={categories} onChange={loadCategories} />
-        ) : (
-        <div className="space-y-3 max-w-3xl">
-          {showForm && (
-            <ProductFormCard onSave={addProduct} onCancel={() => setShowForm(false)} loading={saving}
-              categories={categories} parentOptions={parentOptions} />
-          )}
-
-          {products.length === 0 && loading ? (
-            [...Array(3)].map((_, i) => <div key={i} className="h-16 bg-[#1f2c34] rounded-xl animate-pulse" />)
-          ) : products.length === 0 && !showForm ? (
-            <div className="text-center py-16 text-white/20">
-              <Package size={32} className="mx-auto mb-3 opacity-30" />
-              <p className="text-sm">No products yet</p>
-              <p className="text-xs mt-1 text-white/15">Add your first product with photos, info and price</p>
-            </div>
-          ) : (
-            products.map(p => (
-              <div key={p.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
-                {editId === p.id ? (
-                  <div className="p-3">
-                    <ProductFormCard
-                      initial={variantInitial(p)}
-                      onSave={data => updateProduct(p.id, data)}
-                      onCancel={() => setEditId(null)}
-                      loading={saving}
-                      categories={categories}
-                      parentOptions={parentOptions.filter(o => o.id !== p.id)}
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/3 transition-colors"
-                      onClick={() => setExpanded(e => e === p.id ? null : p.id)}>
-                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
-                        {p.media?.[0]
-                          ? (p.media[0].type === 'video'
-                              ? <video src={mediaSrc(p.media[0])} className="w-full h-full object-cover" muted />
-                              // eslint-disable-next-line @next/next/no-img-element
-                              : <img src={mediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />)
-                          : <Package size={16} className="text-white/20" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-white text-xs font-medium truncate">{p.name}</p>
-                          {p.inAgentContext && (
-                            <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
-                              <Bot size={8} /> In agent
-                            </span>
-                          )}
-                          {(p.variants?.length ?? 0) > 0 && (
-                            <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
-                              <GitBranch size={8} /> {p.variants!.length} variant{p.variants!.length !== 1 ? 's' : ''}
-                            </span>
-                          )}
-                          {p.media?.length > 0 && (
-                            <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full shrink-0">
-                              {p.media.length} media
-                            </span>
-                          )}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex">
+          {/* ── LEFT: product / variant list ───────────────────────── */}
+          <div className="w-[340px] shrink-0 border-r border-white/8 overflow-y-auto">
+            {products.length === 0 && loading ? (
+              <div className="p-3 space-y-2">
+                {[...Array(6)].map((_, i) => <div key={i} className="h-14 bg-[#1f2c34] rounded-lg animate-pulse" />)}
+              </div>
+            ) : products.length === 0 ? (
+              <div className="text-center py-16 px-4 text-white/20">
+                <Package size={28} className="mx-auto mb-3 opacity-30" />
+                <p className="text-sm">No products yet</p>
+                <p className="text-xs mt-1 text-white/15">Click “Add Product” to create your first one</p>
+              </div>
+            ) : (
+              <div className="py-2">
+                {products.map(p => {
+                  const isSel = selection?.mode === 'edit' && selection.id === p.id;
+                  const hasVariants = (p.variants?.length ?? 0) > 0;
+                  const isOpen = expanded.has(p.id);
+                  return (
+                    <div key={p.id}>
+                      <div
+                        onClick={() => setSelection({ mode: 'edit', id: p.id })}
+                        className={`group flex items-center gap-2.5 px-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                          isSel ? 'bg-[#25D366]/10 border-[#25D366]' : 'border-transparent hover:bg-white/5'
+                        }`}>
+                        <div className="w-9 h-9 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                          {p.media?.[0]
+                            ? (p.media[0].type === 'video'
+                                ? <video src={mediaSrc(p.media[0])} className="w-full h-full object-cover" muted />
+                                // eslint-disable-next-line @next/next/no-img-element
+                                : <img src={mediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />)
+                            : <Package size={15} className="text-white/20" />}
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5 text-white/30 text-[10px]">
-                          {p.category   && <span>{p.category}</span>}
-                          {p.priceRange && <span>· {p.priceRange}</span>}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <p className={`text-xs font-medium truncate ${isSel ? 'text-white' : 'text-white/85'}`}>{p.name}</p>
+                            {p.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5 text-white/30 text-[10px]">
+                            {p.priceRange && <span className="truncate">{p.priceRange}</span>}
+                            {hasVariants && <span className="flex items-center gap-0.5 shrink-0"><GitBranch size={8} /> {p.variants!.length}</span>}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                        <button onClick={() => { setVariantParent({ id: p.id, name: p.name }); setEditId(null); setShowForm(false); }}
+                        {/* hover action: add a variant */}
+                        <button
+                          onClick={e => { e.stopPropagation(); setSelection({ mode: 'new-variant', parentId: p.id, parentName: p.name }); setExpanded(prev => new Set(prev).add(p.id)); }}
                           title="Add a variant"
-                          className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
-                          <GitBranch size={13} />
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded text-white/30 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all shrink-0">
+                          <GitBranch size={12} />
                         </button>
-                        <button onClick={() => { setEditId(p.id); setShowForm(false); }} className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
-                          <Pencil size={13} />
-                        </button>
-                        <button onClick={() => deleteProduct(p.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                          <Trash2 size={13} />
-                        </button>
-                        {expanded === p.id ? <ChevronUp size={13} className="text-white/25 ml-1" /> : <ChevronDown size={13} className="text-white/25 ml-1" />}
+                        {hasVariants && (
+                          <button onClick={e => { e.stopPropagation(); toggleExpand(p.id); }}
+                            className="p-0.5 text-white/25 hover:text-white/60 transition-colors shrink-0">
+                            {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                          </button>
+                        )}
                       </div>
+
+                      {/* variant sub-rows */}
+                      {hasVariants && isOpen && p.variants!.map(v => {
+                        const vSel = selection?.mode === 'edit' && selection.id === v.id;
+                        return (
+                          <div key={v.id}
+                            onClick={() => setSelection({ mode: 'edit', id: v.id })}
+                            className={`flex items-center gap-2 pl-10 pr-3 py-1.5 cursor-pointer border-l-2 transition-colors ${
+                              vSel ? 'bg-[#25D366]/10 border-[#25D366]' : 'border-transparent hover:bg-white/5'
+                            }`}>
+                            <div className="w-6 h-6 rounded overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                              {v.media?.[0]
+                                ? (v.media[0].type === 'video'
+                                    ? <video src={mediaSrc(v.media[0])} className="w-full h-full object-cover" muted />
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    : <img src={mediaSrc(v.media[0])} alt="" className="w-full h-full object-cover" />)
+                                : <Package size={11} className="text-white/20" />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-[11px] truncate ${vSel ? 'text-white' : 'text-white/70'}`}>
+                                {v.variantAttributes?.length
+                                  ? v.variantAttributes.map(a => a.value).join(' · ')
+                                  : v.name}
+                              </p>
+                            </div>
+                            {v.priceRange && <span className="text-white/30 text-[10px] shrink-0">{v.priceRange}</span>}
+                          </div>
+                        );
+                      })}
                     </div>
+                  );
+                })}
 
-                    {/* add-variant form for this parent */}
-                    {variantParent?.id === p.id && (
-                      <div className="px-4 pb-4 pt-1 border-t border-white/5">
-                        <ProductFormCard
-                          initial={{ parentId: p.id, categoryId: p.categoryId ?? '' }}
-                          lockParentName={p.name}
-                          onSave={addProduct}
-                          onCancel={() => setVariantParent(null)}
-                          loading={saving}
-                          categories={categories}
-                          parentOptions={parentOptions}
-                        />
-                      </div>
-                    )}
-
-                    {expanded === p.id && (
-                      <div className="px-4 pb-4 pt-1 border-t border-white/5 space-y-3">
-                        {p.description && <p className="text-white/50 text-xs leading-relaxed">{p.description}</p>}
-                        <div className="flex flex-wrap gap-3 text-[10px] text-white/30">
-                          {p.fabric    && <span className="flex items-center gap-1"><Layers size={9} /> {p.fabric}</span>}
-                          {p.occasions && <span className="flex items-center gap-1"><Calendar size={9} /> {p.occasions}</span>}
-                        </div>
-                        {p.customInfo && (
-                          <div className="bg-purple-500/8 border border-purple-500/15 rounded-lg px-3 py-2">
-                            <p className="text-purple-400/70 text-[9px] uppercase tracking-wider mb-1 flex items-center gap-1">
-                              <StickyNote size={9} /> Agent notes
-                            </p>
-                            <p className="text-purple-200/60 text-[11px] leading-relaxed">{p.customInfo}</p>
-                          </div>
-                        )}
-                        {p.media?.length > 0 && (
-                          <div className="grid grid-cols-4 gap-2">
-                            {p.media.map((m, i) => (
-                              <div key={i} className="aspect-square rounded-lg overflow-hidden bg-white/5">
-                                {m.type === 'video'
-                                  ? <video src={mediaSrc(m)} className="w-full h-full object-cover" muted />
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  : <img src={mediaSrc(m)} alt="" className="w-full h-full object-cover" />}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* variants */}
-                        {(p.variants?.length ?? 0) > 0 && (
-                          <div className="space-y-1.5">
-                            <p className="text-white/40 text-[9px] uppercase tracking-wider flex items-center gap-1">
-                              <GitBranch size={9} /> Variants
-                            </p>
-                            {p.variants!.map(v => (
-                              <div key={v.id} className="flex items-center gap-3 bg-[#111b21] border border-white/8 rounded-lg px-3 py-2">
-                                <div className="w-8 h-8 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
-                                  {v.media?.[0]
-                                    ? (v.media[0].type === 'video'
-                                        ? <video src={mediaSrc(v.media[0])} className="w-full h-full object-cover" muted />
-                                        // eslint-disable-next-line @next/next/no-img-element
-                                        : <img src={mediaSrc(v.media[0])} alt="" className="w-full h-full object-cover" />)
-                                    : <Package size={13} className="text-white/20" />}
-                                </div>
-                                <div className="flex-1 min-w-0 space-y-1">
-                                  <div className="flex items-center gap-2">
-                                    <p className="text-white/80 text-[11px] font-medium truncate">{v.name}</p>
-                                    {v.priceRange && <span className="text-white/30 text-[10px]">· {v.priceRange}</span>}
-                                  </div>
-                                  <VariantChips attrs={v.variantAttributes} />
-                                </div>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button onClick={() => { setEditId(v.id); setExpanded(v.id); }}
-                                    className="p-1 rounded text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
-                                    <Pencil size={12} />
-                                  </button>
-                                  <button onClick={() => deleteProduct(v.id)}
-                                    className="p-1 rounded text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                                    <Trash2 size={12} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* edit a variant inline */}
-                        {p.variants?.some(v => v.id === editId) && (
-                          <div className="pt-1">
-                            <ProductFormCard
-                              initial={variantInitial(p.variants!.find(v => v.id === editId)!)}
-                              onSave={data => updateProduct(editId!, data)}
-                              onCancel={() => setEditId(null)}
-                              loading={saving}
-                              categories={categories}
-                              parentOptions={parentOptions.filter(o => o.id !== editId)}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </>
+                {/* Infinite-scroll sentinel — loads the next page as it nears view. */}
+                {hasMore && (
+                  <div ref={sentinelRef} className="py-4 flex justify-center">
+                    {loading && <Loader2 size={16} className="animate-spin text-white/30" />}
+                  </div>
                 )}
               </div>
-            ))
-          )}
+            )}
+          </div>
 
-          {/* Infinite-scroll sentinel — loads the next page as it nears view. */}
-          {hasMore && (
-            <div ref={sentinelRef} className="py-4 flex justify-center">
-              {loading && <Loader2 size={16} className="animate-spin text-white/30" />}
-            </div>
-          )}
+          {/* ── RIGHT: editable preview pane ───────────────────────── */}
+          <div className="flex-1 overflow-y-auto">
+            {!selection ? (
+              <div className="h-full flex flex-col items-center justify-center text-center text-white/20 px-6">
+                <Pencil size={30} className="mb-3 opacity-30" />
+                <p className="text-sm">Select a product or variant to edit</p>
+                <p className="text-xs mt-1 text-white/15">Its full details open here, ready to edit and save</p>
+              </div>
+            ) : (
+              <div className="max-w-2xl mx-auto p-6 space-y-4">
+                {selection.mode === 'new' && (
+                  <>
+                    <h2 className="text-white font-semibold text-sm">New product</h2>
+                    <ProductFormCard key="new" onSave={addProduct} onCancel={() => setSelection(null)}
+                      loading={saving} categories={categories} parentOptions={parentOptions} />
+                  </>
+                )}
+
+                {selection.mode === 'new-variant' && (
+                  <>
+                    <h2 className="text-white font-semibold text-sm">
+                      New variant of <span className="text-[#25D366]">{selection.parentName}</span>
+                    </h2>
+                    <ProductFormCard
+                      key={`nv-${selection.parentId}`}
+                      initial={{ parentId: selection.parentId, categoryId: findProduct(selection.parentId)?.categoryId ?? '' }}
+                      lockParentName={selection.parentName}
+                      onSave={addProduct}
+                      onCancel={() => setSelection(null)}
+                      loading={saving}
+                      categories={categories}
+                      parentOptions={parentOptions}
+                    />
+                  </>
+                )}
+
+                {selection.mode === 'edit' && (() => {
+                  const target = findProduct(selection.id);
+                  if (!target) return (
+                    <p className="text-white/30 text-sm">This product is no longer available.</p>
+                  );
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <h2 className="text-white font-semibold text-sm truncate">{target.name}</h2>
+                          <p className="text-white/35 text-[11px] flex items-center gap-1">
+                            {target.parentId ? <><GitBranch size={10} /> Variant</> : 'Product'}
+                            {target.inAgentContext && <span className="flex items-center gap-0.5 text-[#25D366]/80"><Bot size={10} /> in agent</span>}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {!target.parentId && (
+                            <button onClick={() => { setSelection({ mode: 'new-variant', parentId: target.id, parentName: target.name }); setExpanded(prev => new Set(prev).add(target.id)); }}
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-white/15 bg-white/5 text-white/60 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
+                              <GitBranch size={12} /> Add variant
+                            </button>
+                          )}
+                          <button onClick={() => deleteProduct(target.id)}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-white/15 bg-white/5 text-white/60 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                            <Trash2 size={12} /> Delete
+                          </button>
+                        </div>
+                      </div>
+                      <ProductFormCard
+                        key={`edit-${target.id}`}
+                        initial={variantInitial(target)}
+                        onSave={data => updateProduct(target.id, data)}
+                        onCancel={() => setSelection(null)}
+                        loading={saving}
+                        categories={categories}
+                        parentOptions={parentOptions.filter(o => o.id !== target.id)}
+                      />
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
         </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }

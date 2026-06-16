@@ -7,7 +7,8 @@ export interface FlowEdge { id: string; source: string; target: string; sourceHa
 export interface NodeParams {
   bodyParams: string[];
   headerParam?: string;        // header TEXT {{1}}
-  headerMediaUrl?: string;     // header IMAGE/VIDEO/DOCUMENT link
+  headerMediaUrl?: string;     // header IMAGE/VIDEO/DOCUMENT link (pasted public URL)
+  headerMediaAssetId?: string; // R2 asset key when the media was uploaded/picked from the library
   // Multi-product / catalog templates
   thumbnailProductRetailerId?: string;
   mpmSections?: { title: string; productIds: string }[];  // productIds: comma-separated
