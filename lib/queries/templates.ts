@@ -13,8 +13,12 @@ export interface ShapedTemplate {
   components: unknown;
 }
 
-/** Sync templates from the WhatsApp API into the DB (best effort), then read them back. */
-async function syncAndReadTemplates(): Promise<ShapedTemplate[]> {
+/**
+ * Fetch the live template catalog from the WhatsApp (Meta) API on every call,
+ * upsert it into the DB as a mirror, then return it. If the Meta call fails we
+ * fall back to whatever is stored in the DB so the UI still works.
+ */
+export async function getLiveTemplates(): Promise<ShapedTemplate[]> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const wabaId = process.env.WHATSAPP_WABA_ID;
 
@@ -52,12 +56,12 @@ async function syncAndReadTemplates(): Promise<ShapedTemplate[]> {
 }
 
 /**
- * Cached template catalog. The WhatsApp API sync + upserts run at most once per
- * `revalidate` window (or immediately after `revalidateTag('templates')`), instead
- * of on every request — the catalog rarely changes.
+ * Cached template catalog — kept for callers that prefer a throttled sync over a
+ * live Meta fetch (at most one sync per `revalidate` window, or after
+ * `revalidateTag('templates')`). The Flow/Templates UI uses getLiveTemplates instead.
  */
 export const getCachedTemplates = unstable_cache(
-  syncAndReadTemplates,
+  getLiveTemplates,
   ['wa-templates'],
   { tags: ['templates'], revalidate: 300 },
 );

@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { createMessageTemplate } from '@/lib/whatsapp-api';
-import { getCachedTemplates } from '@/lib/queries/templates';
+import { getLiveTemplates } from '@/lib/queries/templates';
+
+// Always fetch fresh from the Meta API (no route-level caching).
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    return NextResponse.json(await getCachedTemplates());
+    return NextResponse.json(await getLiveTemplates());
   } catch (err: any) {
     console.error('[Templates API] Error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
