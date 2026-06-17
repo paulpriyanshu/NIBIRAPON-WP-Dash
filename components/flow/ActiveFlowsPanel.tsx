@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, Play, Pause, Send, Loader2, Users, CheckCircle2,
   Megaphone, AlertTriangle, RefreshCw, Layers, ChevronDown, ChevronUp, X, ShoppingBag,
-  ImagePlus, Images, Trash2,
+  ImagePlus, Images, Trash2, BarChart3, TrendingUp, MailCheck,
 } from 'lucide-react';
 import {
   findRootNodes, getTemplate, flowParamSpecs, specNeedsConfig,
@@ -20,6 +20,11 @@ interface Flow extends EngineFlow {
   updatedAt?: string;
 }
 interface RunStats { active: number; completed: number; stopped: number; total: number; }
+interface FunnelStep { nodeId: string; label: string; type: string; count: number }
+interface FlowTracking {
+  sent: number; delivered: number; started: number; completed: number;
+  active: number; stopped: number; total: number; funnel: FunnelStep[];
+}
 
 const inputCls = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50';
 
@@ -184,11 +189,31 @@ function FlowCard({ flow, onChanged, savedMessages, media }: { flow: Flow; onCha
   const [launching, setLaunching]   = useState(false);
   const [result, setResult]         = useState('');
 
+  const [trackOpen, setTrackOpen]     = useState(false);
+  const [tracking, setTracking]       = useState<FlowTracking | null>(null);
+  const [trackLoading, setTrackLoading] = useState(false);
+
   const loadStats = useCallback(async () => {
     const res = await fetch(`/api/flows/${flow._id}/runs`);
     if (res.ok) setStats(await res.json());
   }, [flow._id]);
-  useEffect(() => { if (isLive) loadStats(); }, [isLive, loadStats]);
+  useEffect(() => { loadStats(); }, [loadStats]);
+
+  const loadTracking = useCallback(async () => {
+    setTrackLoading(true);
+    try {
+      const res = await fetch(`/api/flows/${flow._id}/tracking`);
+      if (res.ok) setTracking(await res.json());
+    } finally {
+      setTrackLoading(false);
+    }
+  }, [flow._id]);
+  const toggleTracking = () => {
+    setTrackOpen(o => {
+      if (!o) loadTracking();
+      return !o;
+    });
+  };
 
   const openModal = () => {
     setErr('');
@@ -312,6 +337,76 @@ function FlowCard({ flow, onChanged, savedMessages, media }: { flow: Flow; onCha
                   {launching ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} Broadcast &amp; start
                 </button>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Tracking (delivery + funnel) ───────────────────────────── */}
+      {(isLive || (stats?.total ?? 0) > 0) && (
+        <div className="border-t border-white/8">
+          <button onClick={toggleTracking}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] text-white/60 hover:bg-white/[0.03] transition-colors">
+            <span className="flex items-center gap-1.5"><BarChart3 size={12} className="text-[#25D366]" /> Tracking</span>
+            {trackOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+          {trackOpen && (
+            <div className="px-4 pb-4 space-y-3">
+              {trackLoading && !tracking ? (
+                <div className="flex justify-center py-4"><Loader2 size={16} className="animate-spin text-white/30" /></div>
+              ) : !tracking || tracking.total === 0 ? (
+                <p className="text-white/30 text-[11px] py-2">No runs yet — broadcast the root template to start tracking.</p>
+              ) : (
+                <>
+                  {/* headline metrics */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {([
+                      ['Sent',      tracking.sent,      Send,         'text-white/70'],
+                      ['Delivered', tracking.delivered, MailCheck,    'text-blue-300'],
+                      ['Started',   tracking.started,   TrendingUp,   'text-amber-300'],
+                      ['Completed', tracking.completed, CheckCircle2, 'text-[#25D366]'],
+                    ] as const).map(([label, val, Icon, color]) => (
+                      <div key={label} className="bg-[#111b21] border border-white/8 rounded-lg px-2 py-2 text-center">
+                        <Icon size={12} className={`mx-auto mb-1 ${color}`} />
+                        <p className="text-white text-sm font-semibold leading-none">{val}</p>
+                        <p className="text-white/35 text-[9px] uppercase tracking-wider mt-1">{label}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-3 text-[10px] text-white/35">
+                    <span className="text-[#25D366]/70">{tracking.active} active</span>
+                    <span>{tracking.stopped} stopped</span>
+                    <button onClick={loadTracking} className="ml-auto flex items-center gap-1 hover:text-white/70 transition-colors">
+                      <RefreshCw size={10} /> Refresh
+                    </button>
+                  </div>
+
+                  {/* node funnel — how far runs travelled */}
+                  {tracking.funnel.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">Node funnel — runs that reached each step</p>
+                      {tracking.funnel.map((f, i) => {
+                        const denom = tracking.sent || tracking.funnel[0]?.count || 1;
+                        const pct = Math.min(100, Math.round((f.count / denom) * 100));
+                        return (
+                          <div key={f.nodeId} className="flex items-center gap-2">
+                            <span className="text-white/25 text-[9px] w-4 text-right shrink-0">{i + 1}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2 mb-0.5">
+                                <span className="text-white/70 text-[10px] truncate">{f.label}</span>
+                                <span className="text-white/45 text-[10px] shrink-0">{f.count} · {pct}%</span>
+                              </div>
+                              <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                <div className="h-full bg-[#25D366]/70 rounded-full" style={{ width: `${pct}%` }} />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

@@ -1,16 +1,22 @@
 'use client';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell, Users, LogOut, GitBranch, Bot, Package, Sparkles, Images } from 'lucide-react';
+import { MessageSquare, BarChart2, Layers, Settings, Megaphone, Moon, Sun, Bell, Users, LogOut, GitBranch, Bot, Package, Sparkles, Images, ChevronDown } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
 import { useEffect, useState } from 'react';
 
 interface SessionUser { userId: string; name: string; email: string | null; username: string | null; role: string; }
+interface NavChild { href: string; label: string; }
+interface NavItem { href: string; label: string; icon: any; children?: NavChild[]; }
 
-const NAV = [
+const NAV: NavItem[] = [
   { href: '/inbox',     label: 'Inbox',     icon: MessageSquare },
   { href: '/broadcast', label: 'Broadcast', icon: Megaphone },
-  { href: '/templates', label: 'Templates', icon: Layers },
+  { href: '/templates', label: 'Messages',  icon: Layers, children: [
+    { href: '/templates',              label: 'Templates' },
+    { href: '/templates?tab=custom',   label: 'Custom messages' },
+    { href: '/templates?tab=messages', label: 'Saved messages' },
+  ] },
   { href: '/flow',      label: 'Flow',      icon: GitBranch },
   { href: '/agent',     label: 'Agent',     icon: Bot },
   { href: '/manager',   label: 'AI Chat',   icon: Sparkles },
@@ -42,10 +48,14 @@ export default function Sidebar() {
   const displayName = me?.name || 'Admin';
   const displaySub  = me?.role ? me.role.charAt(0).toUpperCase() + me.role.slice(1) : 'Connected';
 
-  const allNav = [
+  const allNav: NavItem[] = [
     ...NAV,
     ...(me?.role === 'admin' ? [{ href: '/users', label: 'Users', icon: Users }] : []),
   ];
+
+  // Track which groups are expanded; auto-expand the group covering the current route.
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const isOpen = (item: NavItem) => open[item.label] ?? isActive(item.href);
 
   return (
     <>
@@ -67,8 +77,38 @@ export default function Sidebar() {
 
         {/* Nav items */}
         <nav className="flex-1 py-3 flex flex-col gap-1 px-2 overflow-y-auto">
-          {allNav.map(({ href, label, icon: Icon }) => {
+          {allNav.map((item) => {
+            const { href, label, icon: Icon, children } = item;
             const active = isActive(href);
+
+            // Expandable group (e.g. Messages) — desktop only; collapses to its parent on mobile widths.
+            if (children?.length) {
+              const expanded = isOpen(item);
+              return (
+                <div key={label}>
+                  <button onClick={() => setOpen(o => ({ ...o, [label]: !expanded }))}
+                    className={`w-full flex items-center gap-3 px-2 py-2.5 rounded-xl transition-all ${
+                      active ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    <Icon size={18} className="flex-shrink-0" />
+                    <span className="hidden lg:block text-sm font-medium truncate">{label}</span>
+                    <ChevronDown size={14} className={`hidden lg:block ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                  </button>
+                  {expanded && (
+                    <div className="hidden lg:flex flex-col gap-0.5 mt-0.5 mb-1 pl-9">
+                      {children.map((c) => (
+                        <Link key={c.href} href={c.href}
+                          className="text-[13px] py-1.5 px-2 rounded-lg text-white/55 hover:text-white hover:bg-white/10 transition-all truncate">
+                          {c.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <Link key={href} href={href}
                 className={`flex items-center gap-3 px-2 py-2.5 rounded-xl transition-all ${

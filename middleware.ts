@@ -7,7 +7,7 @@ const JWT_SECRET = new TextEncoder().encode(
 const COOKIE = 'nb_token';
 
 // Paths that don't require authentication
-const PUBLIC = ['/login', '/api/auth/login', '/api/webhook'];
+const PUBLIC = ['/login', '/api/auth/login', '/api/webhook', '/api/public'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

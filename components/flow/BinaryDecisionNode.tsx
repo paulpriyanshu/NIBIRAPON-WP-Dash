@@ -17,22 +17,38 @@ export default function BinaryDecisionNode({ id, data, selected }: NodeProps) {
   const [hovered, setHovered] = useState(false);
   const allEdges = useEdges();
 
-  // ── Detect an upstream template node and its buttons ──────────────────────
-  // When this decision node is fed by a template that has buttons, it auto-
-  // converts into a router with one branch per button (labelled with the
-  // button text) instead of a plain Yes / No.
+  // ── Detect an upstream node's tappable options ────────────────────────────
+  // When this decision node is fed by a template (quick-reply buttons) OR a
+  // custom message node (list rows / reply buttons), it auto-converts into a
+  // router with one branch per option (labelled with the option text).
   const incoming   = allEdges.find(e => e.target === id);
   const srcNode    = incoming ? getNode(incoming.source) : undefined;
   const srcTemplate = srcNode?.type === 'templateNode'
     ? (srcNode.data as { template?: Template }).template
     : undefined;
-  const tplButtons: TemplateButton[] =
-    srcTemplate?.components.find(c => c.type === 'BUTTONS')?.buttons ?? [];
-  // Keep original indexes so handle ids (`btn-${i}`) stay stable across renders.
-  const actionable = tplButtons
-    .map((b, i) => ({ b, i }))
-    .filter(({ b }) => isActionable(b));
-  // Only enter router mode when there's at least one wireable (quick-reply) button.
+  const customOptions: string[] = srcNode?.type === 'customNode'
+    ? ((srcNode.data as { options?: string[] }).options ?? [])
+    : [];
+
+  // Unified option list. `index` is the stable handle id suffix (`btn-${index}`);
+  // it matches the option's position used by the flow compiler.
+  type Opt = { text: string; index: number; actionable: boolean; kind: string };
+  let opts: Opt[] = [];
+  let sourceLabel = '';
+  if (srcTemplate) {
+    sourceLabel = srcTemplate.name;
+    const tplButtons: TemplateButton[] = srcTemplate.components.find(c => c.type === 'BUTTONS')?.buttons ?? [];
+    opts = tplButtons.map((b, i) => ({
+      text: b.text, index: i, actionable: isActionable(b),
+      kind: b.type === 'QUICK_REPLY' ? 'reply' : b.type === 'PHONE_NUMBER' ? 'call · no branch' : `${b.type.toLowerCase()} · no branch`,
+    }));
+  } else if (srcNode?.type === 'customNode') {
+    sourceLabel = (srcNode.data as { label?: string }).label || 'Custom message';
+    opts = customOptions.map((text, i) => ({ text, index: i, actionable: true, kind: 'option' }));
+  }
+
+  const actionable = opts.filter(o => o.actionable);
+  // Only enter router mode when there's at least one wireable option.
   const buttonMode = actionable.length > 0;
 
   const connected = (handleId: string) =>
@@ -40,7 +56,7 @@ export default function BinaryDecisionNode({ id, data, selected }: NodeProps) {
 
   /* ── Button-router mode ─────────────────────────────────────────────────── */
   if (buttonMode) {
-    const wiredCount = actionable.filter(({ i }) => connected(`btn-${i}`)).length;
+    const wiredCount = actionable.filter(o => connected(`btn-${o.index}`)).length;
     return (
       <div
         onMouseEnter={() => setHovered(true)}
@@ -63,7 +79,7 @@ export default function BinaryDecisionNode({ id, data, selected }: NodeProps) {
             <p className="text-amber-300 text-[11px] font-semibold leading-none">Button Router</p>
             <p className="text-amber-500/60 text-[9px] flex items-center gap-1 mt-0.5 truncate">
               <Layers size={8} className="shrink-0" />
-              from {srcTemplate?.name}
+              from {sourceLabel}
             </p>
           </div>
           <button
@@ -80,13 +96,13 @@ export default function BinaryDecisionNode({ id, data, selected }: NodeProps) {
           <label className="text-white/25 text-[9px] uppercase tracking-wider block">
             Wire each reply button to its next step ({wiredCount}/{actionable.length})
           </label>
-          {tplButtons.map((b, i) => {
-            const actionableIdx = actionable.findIndex(a => a.i === i);
-            const act = actionableIdx !== -1;
+          {opts.map((o) => {
+            const actionableIdx = actionable.findIndex(a => a.index === o.index);
+            const act = o.actionable;
             const color = BRANCH_COLORS[actionableIdx % BRANCH_COLORS.length];
-            const on = act && connected(`btn-${i}`);
+            const on = act && connected(`btn-${o.index}`);
             return (
-              <div key={i} className={`flex items-center gap-1.5 ${act ? '' : 'opacity-45'}`}>
+              <div key={o.index} className={`flex items-center gap-1.5 ${act ? '' : 'opacity-45'}`}>
                 <div className="w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold"
                   style={act
                     ? { background: color + '25', color }
@@ -94,34 +110,32 @@ export default function BinaryDecisionNode({ id, data, selected }: NodeProps) {
                   {act ? actionableIdx + 1 : <Ban size={9} />}
                 </div>
                 <span className="flex-1 text-[10px] truncate" style={{ color: on ? color : 'rgba(255,255,255,0.5)' }}>
-                  {b.text}
+                  {o.text}
                 </span>
-                <span className="text-white/25 text-[8px] uppercase tracking-wider shrink-0">
-                  {b.type === 'QUICK_REPLY' ? 'reply' : b.type === 'PHONE_NUMBER' ? 'call · no branch' : `${b.type.toLowerCase()} · no branch`}
-                </span>
+                <span className="text-white/25 text-[8px] uppercase tracking-wider shrink-0">{o.kind}</span>
               </div>
             );
           })}
         </div>
 
-        {/* Handle labels row — actionable buttons only */}
+        {/* Handle labels row — actionable options only */}
         <div className="px-3 pb-4 border-t border-amber-400/5 pt-2 flex" style={{ justifyContent: 'space-around' }}>
-          {actionable.map(({ b }, ai) => (
-            <div key={ai} className="text-center" style={{ width: `${100 / actionable.length}%` }}>
+          {actionable.map((o, ai) => (
+            <div key={o.index} className="text-center" style={{ width: `${100 / actionable.length}%` }}>
               <p className="text-[8px] truncate px-0.5" style={{ color: BRANCH_COLORS[ai % BRANCH_COLORS.length] + 'aa' }}>
-                {b.text}
+                {o.text}
               </p>
             </div>
           ))}
         </div>
 
-        {/* One source handle per actionable (quick-reply) button */}
-        {actionable.map(({ i }, ai) => (
+        {/* One source handle per actionable option */}
+        {actionable.map((o, ai) => (
           <Handle
-            key={i}
+            key={o.index}
             type="source"
             position={Position.Bottom}
-            id={`btn-${i}`}
+            id={`btn-${o.index}`}
             style={{
               background: BRANCH_COLORS[ai % BRANCH_COLORS.length],
               border: '2.5px solid #1f1805',

@@ -26,10 +26,11 @@ import BinaryDecisionNode  from './BinaryDecisionNode';
 import MultiConditionNode  from './MultiConditionNode';
 import DelayNode           from './DelayNode';
 import TextNode            from './TextNode';
+import CustomNode          from './CustomNode';
 import DeletableEdge       from './DeletableEdge';
 import {
   Search, Layers, GitBranch, Trash2, Info, GripVertical,
-  Filter, Network, Save, Check, Loader2, MessageSquare,
+  Filter, Network, Save, Check, Loader2, MessageSquare, MessageSquareMore,
   ChevronLeft, ChevronRight, Clock, X, BookOpen,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -55,6 +56,7 @@ const nodeTypes = {
   multiConditionNode: MultiConditionNode,
   delayNode:          DelayNode,
   textNode:           TextNode,
+  customNode:         CustomNode,
 };
 
 const edgeTypes = { deletableEdge: DeletableEdge };
@@ -108,7 +110,32 @@ const TOOLBAR_NODES = [
     icon: MessageSquare,
     palette: { bg: 'bg-indigo-500/10', border: 'border-indigo-500/25', hover: 'hover:bg-indigo-500/20 hover:border-indigo-500/50', text: 'text-indigo-300' },
   },
+  {
+    type: 'customNode',
+    label: 'Custom',
+    hint: 'Send a saved custom message (option list / buttons / text / media). Branch per option via a router.',
+    icon: MessageSquareMore,
+    palette: { bg: 'bg-emerald-500/10', border: 'border-emerald-500/25', hover: 'hover:bg-emerald-500/20 hover:border-emerald-500/50', text: 'text-emerald-300' },
+  },
 ] as const;
+
+/**
+ * A stable signature of the *persisted* shape of a flow — node id/type/position
+ * and data, plus edge connections. Deliberately excludes React Flow's runtime
+ * fields (`measured`, width/height, `selected`, `dragging`) so the node-measure
+ * pass that fires on every (re)mount doesn't get mistaken for a real edit. Used
+ * to decide whether the canvas is genuinely dirty.
+ */
+function flowSignature(nodes: Node[], edges: Edge[]): string {
+  return JSON.stringify({
+    n: nodes.map(n => ({
+      id: n.id, type: n.type,
+      x: Math.round(n.position?.x ?? 0), y: Math.round(n.position?.y ?? 0),
+      data: n.data ?? {},
+    })),
+    e: edges.map(e => ({ id: e.id, s: e.source, t: e.target, sh: e.sourceHandle ?? null, th: e.targetHandle ?? null })),
+  });
+}
 
 const NODE_DEFAULT_DATA: Record<string, object> = {
   conditionNode:      { condition: '' },
@@ -116,6 +143,7 @@ const NODE_DEFAULT_DATA: Record<string, object> = {
   multiConditionNode: { branches: [{ id: 'b1', label: 'Branch 1' }, { id: 'b2', label: 'Branch 2' }] },
   delayNode:          { seconds: 5 },
   textNode:           { name: 'Message', content: '' },
+  customNode:         { customMessageId: '', label: '', optType: '', options: [] },
 };
 
 /* ── adaptive grid (zoom-invariant) ─────────────────────────────── */
@@ -260,6 +288,8 @@ export default function FlowBuilderPage() {
   const latestFlowName      = useRef('My Flow');
   const latestNodes         = useRef<Node[]>([]);
   const latestEdges         = useRef<Edge[]>([]);
+  /** Signature of the last state we know is persisted — see flowSignature(). */
+  const savedSigRef         = useRef<string>(flowSignature([], []));
 
   useEffect(() => { latestFlowId.current   = flowId;   }, [flowId]);
   useEffect(() => { latestFlowName.current = flowName; }, [flowName]);
@@ -297,6 +327,7 @@ export default function FlowBuilderPage() {
     if (currentNodes.length === 0 && currentEdges.length === 0) { setSaveMode('idle'); return; }
     const name    = latestFlowName.current?.trim() || `Flow ${new Date().toLocaleString()}`;
     const payload = { name, nodes: currentNodes, edges: currentEdges };
+    const sig     = flowSignature(currentNodes, currentEdges);
     setSaveMode('saving');
     try {
       if (latestFlowId.current) {
@@ -315,6 +346,7 @@ export default function FlowBuilderPage() {
         setFlowId(data.id);
         latestFlowId.current = data.id;
       }
+      savedSigRef.current = sig;
       setSaveMode('saved');
       if (sidebarOpen) loadSavedFlows();
       setTimeout(() => setSaveMode('idle'), 1500);
@@ -328,6 +360,9 @@ export default function FlowBuilderPage() {
   useEffect(() => {
     if (!mountedRef.current) { mountedRef.current = true; return; }
     if (suppressAutoSaveRef.current) return;
+    // Ignore changes that don't alter the persisted shape — e.g. React Flow's
+    // node-measure pass on (re)mount, which would otherwise flag a false "Unsaved".
+    if (flowSignature(nodes, edges) === savedSigRef.current) return;
     setSaveMode('pending');
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(() => performAutoSave(), 1500);
@@ -345,11 +380,14 @@ export default function FlowBuilderPage() {
         if (flows.length === 0) return;
         const latest = flows[0]; // sorted by updatedAt desc
         suppressAutoSaveRef.current = true;
-        setNodes(latest.nodes ?? []);
-        setEdges((latest.edges ?? []).map(e => ({ ...DEFAULT_EDGE, ...e, type: 'deletableEdge', id: e.id })));
+        const loadedNodes = latest.nodes ?? [];
+        const loadedEdges = (latest.edges ?? []).map(e => ({ ...DEFAULT_EDGE, ...e, type: 'deletableEdge', id: e.id }));
+        setNodes(loadedNodes);
+        setEdges(loadedEdges);
         setFlowId(latest._id);
         setFlowName(latest.name);
         setSavedFlows(flows);
+        savedSigRef.current = flowSignature(loadedNodes, loadedEdges);
         setTimeout(() => { suppressAutoSaveRef.current = false; }, 300);
       } catch { /* start with empty canvas */ }
     };
@@ -452,6 +490,7 @@ export default function FlowBuilderPage() {
         setFlowId(data.id);
       }
 
+      savedSigRef.current = flowSignature(nodes, edges);
       setSaveMode('saved');
       if (sidebarOpen) loadSavedFlows();
       setTimeout(() => setSaveMode('idle'), 2000);
@@ -465,10 +504,13 @@ export default function FlowBuilderPage() {
   /* load flow */
   const loadFlow = (flow: SavedFlow) => {
     suppressAutoSaveRef.current = true;
-    setNodes(flow.nodes ?? []);
-    setEdges((flow.edges ?? []).map(e => ({ ...DEFAULT_EDGE, ...e, type: 'deletableEdge', id: e.id })));
+    const loadedNodes = flow.nodes ?? [];
+    const loadedEdges = (flow.edges ?? []).map(e => ({ ...DEFAULT_EDGE, ...e, type: 'deletableEdge', id: e.id }));
+    setNodes(loadedNodes);
+    setEdges(loadedEdges);
     setFlowId(flow._id);
     setFlowName(flow.name);
+    savedSigRef.current = flowSignature(loadedNodes, loadedEdges);
     setSidebarOpen(false);
     setTimeout(() => {
       suppressAutoSaveRef.current = false;
@@ -486,6 +528,7 @@ export default function FlowBuilderPage() {
   const clearCanvas = () => {
     suppressAutoSaveRef.current = true;
     setNodes([]); setEdges([]); setFlowId(null); setFlowName('My Flow');
+    savedSigRef.current = flowSignature([], []);
     setTimeout(() => { suppressAutoSaveRef.current = false; }, 300);
   };
 

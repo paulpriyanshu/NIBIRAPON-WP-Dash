@@ -8,6 +8,8 @@ import {
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage, sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
+import { sendCustomMessage } from '@/lib/custom-message-send';
+import { handleCustomOptionPick } from '@/lib/custom-option-reply';
 import { configToSendPayload } from '@/lib/templates';
 import { getSendUrl } from '@/lib/inventory-media';
 import { advanceRunOnButton } from '@/lib/flow-store';
@@ -333,11 +335,12 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   // sending the next template. Typed messages are left to the AI agent below.
   const isButtonTap   = msg.type === 'button' || msg.type === 'interactive';
   const isListPick    = msg.type === 'interactive' && templateData?.interactiveType === 'list_reply';
+
   let flowAdvanced = false;
   if (isButtonTap) {
     const buttonText   = templateData?.buttonTitle || msgText || '';
     const contextMsgId = templateData?.contextMsgId || msg.context?.id || undefined;
-    console.log(`[flow] button tap from=${fromPhone} type=${msg.type} text="${buttonText}" context=${contextMsgId ?? 'none'}`);
+    console.log(`[flow] button tap from=${fromPhone} type=${msg.type} text="${buttonText}" id="${templateData?.buttonId ?? ''}" context=${contextMsgId ?? 'none'}`);
     if (buttonText) {
       flowAdvanced = await advanceRunOnButton({
         phone: fromPhone,
@@ -347,6 +350,16 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
         bizPhone: phoneNumberId,
       }).catch(err => { console.error('[flow-advance]', err); return false; });
     }
+  }
+
+  // A tap on a dynamic custom-message option (category/product) that NO flow branch
+  // consumed → auto-reply with that item's images + details (category drills into
+  // its products). Flow branching takes priority; this is the fallback.
+  if (!flowAdvanced && isButtonTap && templateData?.buttonId?.startsWith('cmopt:')) {
+    const handled = await handleCustomOptionPick({
+      buttonId: templateData.buttonId, toPhone: fromPhone, bizPhone: phoneNumberId, conversationId,
+    }).catch(err => { console.error('[cmopt]', err); return false; });
+    if (handled) return;
   }
 
   // The agent handles messages the customer typed (type "text") AND category
@@ -397,8 +410,8 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, list, template, shouldRespond } = await runAgent(userText, chatHistory);
-  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
+  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory);
+  console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} custom=${customMessage?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;
 
@@ -544,6 +557,29 @@ async function agentReply({
       }).onConflictDoNothing();
     } catch (err) {
       console.error('[agent] list send failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── 5. Saved custom message (option list / buttons / text / media) ─────────
+  if (customMessage) {
+    try {
+      const r = await sendCustomMessage(toPhone, customMessage);
+      console.log(`[agent] ✓ custom message "${customMessage.name}" send waId=${r.msgId ?? 'local'}`);
+      await db.insert(messages).values({
+        id:            r.msgId || localId('custom'),
+        conversationId,
+        fromNumber:    bizPhone,
+        toNumber:      toPhone,
+        type:          r.recordType as any,
+        text:          r.text,
+        mediaUrl:      r.mediaUrl ?? null,
+        status:        r.msgId ? 'sent' : 'failed',
+        isOutgoing:    true,
+        sentBy:        'agent',
+        sentAt:        new Date(),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.error('[agent] custom message send failed:', err instanceof Error ? err.message : err);
     }
   }
 

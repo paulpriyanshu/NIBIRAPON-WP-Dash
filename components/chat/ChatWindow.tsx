@@ -197,6 +197,20 @@ export default function ChatWindow() {
     [selectedId, conversation, dispatch]
   );
 
+  // Send a saved custom (in-session) message, then refresh the thread.
+  const handleSendCustom = useCallback(async (customMessageId: string) => {
+    if (!selectedId || !conversation) return;
+    try {
+      const res = await fetch('/api/custom-messages/send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: selectedId, customMessageId, to: conversation.contact.phone }),
+      });
+      if (res.ok) dispatch(fetchMessages({ conversationId: selectedId }));
+    } catch (err) {
+      console.error('Failed to send custom message:', err);
+    }
+  }, [selectedId, conversation, dispatch]);
+
   const filteredMessages = searchQuery
     ? messages.filter((m) => m.text?.toLowerCase().includes(searchQuery.toLowerCase()))
     : messages;
@@ -379,6 +393,7 @@ export default function ChatWindow() {
 
         <MessageInput
           onSend={handleSend}
+          onSendCustom={handleSendCustom}
           replyTo={replyToMessage}
           onCancelReply={() => setReplyToMessage(null)}
         />

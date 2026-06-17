@@ -83,9 +83,28 @@ export function textNodeLabel(node: FlowNode | undefined): string {
   return name?.trim() || 'Message';
 }
 
-/** Whether a node sends something when the flow reaches it (template or text). */
+/** A custom (in-session) message node references a saved custom message by id and
+ *  caches its options so the flow can branch on them without a DB read. */
+export function customNodeMessageId(node: FlowNode | undefined): string | null {
+  if (!node || node.type !== 'customNode') return null;
+  const id = (node.data as { customMessageId?: string } | undefined)?.customMessageId;
+  return typeof id === 'string' && id ? id : null;
+}
+
+/** The tappable reply options a node offers — quick replies (templateNode) or the
+ *  cached options of a customNode. Drives flow branching, uniformly. */
+export function nodeReplyOptions(node: FlowNode | undefined): FlowButton[] {
+  if (node?.type === 'templateNode') return quickReplyButtons(node);
+  if (node?.type === 'customNode') {
+    const opts = (node.data as { options?: string[] } | undefined)?.options ?? [];
+    return opts.map((text, index) => ({ index, text }));
+  }
+  return [];
+}
+
+/** Whether a node sends something when the flow reaches it (template, text, or custom). */
 export function isSendableNode(node: FlowNode | undefined): boolean {
-  return node?.type === 'templateNode' || node?.type === 'textNode';
+  return node?.type === 'templateNode' || node?.type === 'textNode' || node?.type === 'customNode';
 }
 
 /** Whether a template is a multi-product (MPM) or catalog template. */
@@ -168,13 +187,15 @@ export function compileFlow(flow: Flow): CompiledFlow {
   for (const n of flow.nodes ?? []) nodesById[n.id] = n;
   const edges = flow.edges ?? [];
 
-  // Follow pass-through nodes until we reach a sendable node (template or text).
+  const SENDABLE = (t?: string) => t === 'templateNode' || t === 'textNode' || t === 'customNode';
+
+  // Follow pass-through nodes until we reach a sendable node (template/text/custom).
   const resolveToTemplate = (nodeId: string, seen = new Set<string>()): string | null => {
     if (seen.has(nodeId)) return null;
     seen.add(nodeId);
     const n = nodesById[nodeId];
     if (!n) return null;
-    if (n.type === 'templateNode' || n.type === 'textNode') return nodeId;
+    if (SENDABLE(n.type)) return nodeId;
     if (n.type === 'conditionNode') {
       const out = edges.find(e => e.source === nodeId);
       return out ? resolveToTemplate(out.target, seen) : null;
@@ -184,10 +205,10 @@ export function compileFlow(flow: Flow): CompiledFlow {
 
   const transitions: CompiledFlow['transitions'] = {};
 
-  // Template nodes branch on buttons; text nodes just flow on to their next node.
+  // Template/custom nodes branch on their reply options; text nodes flow straight on.
   for (const node of flow.nodes ?? []) {
-    if (node.type !== 'templateNode' && node.type !== 'textNode') continue;
-    const buttons = quickReplyButtons(node);
+    if (!SENDABLE(node.type)) continue;
+    const buttons = nodeReplyOptions(node);
     const entry: CompiledFlow['transitions'][string] = { buttons: {}, default: null };
 
     for (const oe of edges.filter(e => e.source === node.id)) {
@@ -195,27 +216,27 @@ export function compileFlow(flow: Flow): CompiledFlow {
       if (!target) continue;
 
       if (target.type === 'delayNode') {
-        // template → Delay → next template: auto-advance after N seconds.
+        // node → Delay → next sendable: auto-advance after N seconds.
         const seconds = Math.max(0, Number(target.data?.seconds) || 0);
         const out = edges.find(e => e.source === target.id);
         const dest = out ? resolveToTemplate(out.target) : null;
         if (dest) entry.delay = { seconds, nextId: dest };
       } else if (target.type === 'binaryDecisionNode') {
-        // Button router fed by this template — map each button's btn-i edge.
+        // Button router fed by this node — map each option's btn-i edge.
         for (const b of buttons) {
           const be = edges.find(e => e.source === target.id && e.sourceHandle === `btn-${b.index}`);
           const dest = be ? resolveToTemplate(be.target) : null;
           if (dest) entry.buttons[b.text] = dest;
         }
       } else if (target.type === 'multiConditionNode') {
-        // Manual multi-path — match a branch label to a button text (best effort).
+        // Manual multi-path — match a branch label to an option text (best effort).
         const branches = (target.data?.branches as { id: string; label: string }[] | undefined) ?? [];
         for (const br of branches) {
           const be = edges.find(e => e.source === target.id && e.sourceHandle === br.id);
           const dest = be ? resolveToTemplate(be.target) : null;
           if (dest) entry.buttons[br.label] = dest;
         }
-      } else if (target.type === 'templateNode') {
+      } else if (SENDABLE(target.type)) {
         entry.default = target.id;
       } else if (target.type === 'conditionNode') {
         const dest = resolveToTemplate(target.id);
@@ -258,4 +279,39 @@ export function hasOnward(c: CompiledFlow, nodeId: string): boolean {
 /** Delay-based auto-advance for a node, if any. */
 export function delayAfter(c: CompiledFlow, nodeId: string): { seconds: number; nextId: string } | null {
   return c.transitions[nodeId]?.delay ?? null;
+}
+
+/* ── Tracking helpers ────────────────────────────────────────────────────────── */
+
+/** A short, human label for a sendable node — used in run tracking / funnels. */
+export function nodeShortLabel(node: FlowNode | undefined): string {
+  if (!node) return 'Node';
+  if (node.type === 'templateNode') return getTemplate(node)?.name ?? 'Template';
+  if (node.type === 'textNode')     return textNodeLabel(node);
+  if (node.type === 'customNode')   return (node.data as { label?: string } | undefined)?.label || 'Custom message';
+  return node.type ?? 'Node';
+}
+
+/**
+ * Sendable nodes reachable from the root, in breadth-first (flow) order — the
+ * spine of a run funnel. Mirrors the runtime: a run "reaches" the root and every
+ * node it later advances to, so these are exactly the nodes a run can occupy.
+ */
+export function orderedSendableNodes(flow: Flow, rootId: string): string[] {
+  const c = compileFlow(flow);
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const queue: string[] = [rootId];
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (seen.has(id) || !c.nodesById[id]) continue;
+    seen.add(id);
+    order.push(id);
+    const e = c.transitions[id];
+    if (!e) continue;
+    const nexts = [...Object.values(e.buttons), e.default, e.delay?.nextId]
+      .filter((n): n is string => !!n);
+    for (const n of nexts) if (!seen.has(n)) queue.push(n);
+  }
+  return order;
 }

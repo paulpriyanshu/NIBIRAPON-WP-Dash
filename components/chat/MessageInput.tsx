@@ -1,8 +1,9 @@
 'use client';
-import { useState, useRef, KeyboardEvent } from 'react';
-import { Paperclip, Smile, Send, Mic, Layers, Image, FileText, X, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import { Paperclip, Smile, Send, Mic, Layers, Image, FileText, X, Loader2, MessageSquareMore, List, MousePointerClick } from 'lucide-react';
 import TemplateModal from './TemplateModal';
 import { Template, Message } from '@/types';
+import { customMessageOptions, renderCustomPreview, type CustomMessage } from '@/lib/custom-messages';
 
 interface TemplateSendData {
   bodyParams: string[];
@@ -13,18 +14,27 @@ interface TemplateSendData {
 
 interface MessageInputProps {
   onSend: (text: string, type?: string, templateName?: string, mediaId?: string, filename?: string, mimeType?: string, previewUrl?: string, replyToId?: string, templateData?: TemplateSendData) => void;
+  onSendCustom?: (customMessageId: string) => void;
   disabled?: boolean;
   replyTo?: Message | null;
   onCancelReply?: () => void;
 }
 
 const EMOJI_QUICK = ['😊', '👍', '❤️', '😂', '🙏', '✅', '🎉', '😍', '🔥', '💯'];
+const CUSTOM_ICON: Record<string, any> = { list: List, buttons: MousePointerClick };
 
-export default function MessageInput({ onSend, disabled, replyTo, onCancelReply }: MessageInputProps) {
+export default function MessageInput({ onSend, onSendCustom, disabled, replyTo, onCancelReply }: MessageInputProps) {
   const [text, setText] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const [showAttach, setShowAttach] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
+  const [customMsgs, setCustomMsgs] = useState<CustomMessage[]>([]);
+
+  useEffect(() => {
+    if (!showCustom || customMsgs.length) return;
+    fetch('/api/custom-messages').then(r => r.ok ? r.json() : []).then(setCustomMsgs).catch(() => {});
+  }, [showCustom, customMsgs.length]);
   const [isRecording, setIsRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -203,6 +213,38 @@ export default function MessageInput({ onSend, disabled, replyTo, onCancelReply 
           </div>
         )}
 
+        {/* Custom message picker */}
+        {showCustom && onSendCustom && (
+          <div className="px-4 py-2 border-b border-gray-200 dark:border-[#2a3942] bg-white dark:bg-[#1f2c34] max-h-64 overflow-y-auto">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs font-semibold text-gray-500 dark:text-[#8696a0]">Send a custom message</p>
+              <button onClick={() => setShowCustom(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-[#8696a0]"><X size={14} /></button>
+            </div>
+            {customMsgs.length === 0 ? (
+              <p className="text-[11px] text-gray-400 dark:text-[#667781] py-3 text-center">No custom messages. Create them in Messages → Custom.</p>
+            ) : (
+              <div className="space-y-1">
+                {customMsgs.map((m) => {
+                  const Icon = CUSTOM_ICON[m.type] || MessageSquareMore;
+                  const opts = customMessageOptions(m);
+                  return (
+                    <button key={m.id}
+                      onClick={() => { onSendCustom(m.id); setShowCustom(false); }}
+                      className="w-full text-left p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-[#2a3942] transition-colors">
+                      <div className="flex items-center gap-2">
+                        <Icon size={13} className="text-[#25D366] shrink-0" />
+                        <span className="text-xs font-medium text-[#111b21] dark:text-[#e9edef] truncate">{m.name}</span>
+                        {opts.length > 0 && <span className="text-[9px] text-gray-400 ml-auto shrink-0">{opts.length} option{opts.length !== 1 ? 's' : ''}</span>}
+                      </div>
+                      <p className="text-[10px] text-gray-400 dark:text-[#667781] mt-0.5 line-clamp-1 whitespace-pre-wrap">{renderCustomPreview(m)}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Reply quote strip */}
         {replyTo && (
           <div className="px-4 py-2 border-b border-gray-200 dark:border-[#2a3942] bg-white dark:bg-[#1f2c34] flex items-center gap-2">
@@ -230,11 +272,22 @@ export default function MessageInput({ onSend, disabled, replyTo, onCancelReply 
           </button>
 
           <button
-            onClick={() => { setShowAttach(!showAttach); setShowEmoji(false); }}
+            onClick={() => { setShowAttach(!showAttach); setShowEmoji(false); setShowCustom(false); }}
             className={`p-2 rounded-full flex-shrink-0 transition-colors ${showAttach ? 'text-[#25D366]' : 'text-[#54656f] hover:bg-gray-200 dark:hover:bg-[#2a3942]'}`}
           >
             <Paperclip size={22} />
           </button>
+
+          {onSendCustom && (
+            <button
+              onClick={() => { setShowCustom(!showCustom); setShowEmoji(false); setShowAttach(false); }}
+              disabled={disabled}
+              title="Send a custom message"
+              className={`p-2 rounded-full flex-shrink-0 transition-colors ${showCustom ? 'text-[#25D366]' : 'text-[#54656f] hover:bg-gray-200 dark:hover:bg-[#2a3942]'}`}
+            >
+              <MessageSquareMore size={22} />
+            </button>
+          )}
 
           <div className="flex-1 bg-white dark:bg-[#2a3942] rounded-3xl border border-gray-200 dark:border-[#3a4a52] flex items-end px-4 py-2 shadow-sm">
             <textarea

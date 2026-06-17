@@ -2,16 +2,19 @@ import { ObjectId } from 'mongodb';
 import getMongoClient from '@/lib/mongodb';
 import { db } from '@/db';
 import { messages, conversations } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, inArray, count } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage, sendMediaMessage, uploadMedia } from '@/lib/whatsapp-api';
 import { getSendUrl, r2HasPublicBase } from '@/lib/inventory-media';
 import {
-  compileFlow, resolveNext, hasOnward, delayAfter, quickReplyButtons,
+  compileFlow, resolveNext, hasOnward, delayAfter,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
   textNodeContent, textNodeLabel, textNodeMedia, isSendableNode,
+  customNodeMessageId, nodeReplyOptions, findRootNodes, nodeShortLabel, orderedSendableNodes,
   type Flow, type FlowButton, type FlowNode, type CompiledFlow,
 } from '@/lib/flow-engine';
 import { configToSendPayload } from '@/lib/templates';
+import { getCustomMessage } from '@/lib/custom-message-store';
+import { sendCustomMessage } from '@/lib/custom-message-send';
 
 /** Send a template node with its configured params (handles MPM/catalog). Returns the wamid. */
 async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise<string | undefined> {
@@ -43,6 +46,8 @@ interface SentNode {
   msgId?: string; label: string; isTemplate: boolean; text?: string;
   // Present when the node sent a photo/video (message node with media).
   media?: { type: 'image' | 'video'; displayUrl: string | null; caption?: string };
+  // True when the node sent an interactive custom message (list / reply buttons).
+  interactive?: boolean;
 }
 
 /**
@@ -106,6 +111,28 @@ async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<Sen
     return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text };
   }
 
+  // Custom (in-session) message node — text / media / reply-buttons / option list.
+  if (node!.type === 'customNode') {
+    const id = customNodeMessageId(node);
+    const label = (node!.data as { label?: string } | undefined)?.label || 'Custom message';
+    if (!id) { console.warn(`[flow] custom node ${nodeId} has no message selected`); return { label, isTemplate: false }; }
+    const m = await getCustomMessage(id);
+    if (!m) { console.warn(`[flow] custom message ${id} not found`); return { label, isTemplate: false, text: '⚠ custom message not found' }; }
+    console.log(`[flow] sending custom message "${m.name}" (${m.type}) id=${id} → ${to}`);
+    try {
+      const r = await sendCustomMessage(to, m);
+      console.log(`[flow] ✓ custom message "${m.name}" sent waId=${r.msgId ?? 'none'}`);
+      if (r.recordType === 'image' || r.recordType === 'video') {
+        return { msgId: r.msgId, label, isTemplate: false, text: r.text, media: { type: r.recordType, displayUrl: r.mediaUrl ?? null, caption: m.caption } };
+      }
+      return { msgId: r.msgId, label, isTemplate: false, text: r.text, interactive: r.recordType === 'interactive' };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : 'send failed';
+      console.error(`[flow] custom message send failed for node ${nodeId} ("${label}"):`, reason);
+      return { label, isTemplate: false, text: `⚠ message not sent — ${reason}` };
+    }
+  }
+
   const info = templateSendInfo(node);
   if (!info) return null;
   const msgId = await sendNodeTemplate(flow, nodeId, to);
@@ -138,6 +165,9 @@ export interface FlowRun {
   currentNodeId: string;
   currentButtons: FlowButton[];
   lastTemplateMsgId: string | null;
+  // WhatsApp id of the root message sent at launch — lets us track delivery of
+  // the initial send (lastTemplateMsgId moves on as the run advances).
+  rootMsgId?: string | null;
   status: 'active' | 'completed' | 'stopped';
   startedAt: Date;
   updatedAt: Date;
@@ -162,7 +192,11 @@ function nextAutoStep(compiled: CompiledFlow, nodeId: string): { seconds: number
   const d = delayAfter(compiled, nodeId);
   if (d) return d;
   const node = compiled.nodesById[nodeId];
-  if (node?.type === 'textNode') {
+  // Text nodes, and custom nodes with NO tappable options, fire then continue
+  // straight to the next node. A custom node WITH options waits for a tap.
+  const autoContinues = node?.type === 'textNode'
+    || (node?.type === 'customNode' && nodeReplyOptions(node).length === 0);
+  if (autoContinues) {
     const def = compiled.transitions[nodeId]?.default;
     if (def) return { seconds: 0, nextId: def };
   }
@@ -214,7 +248,7 @@ async function runAutoChain(args: {
     await persistFlowMessage({
       msgId, conversationId: args.conversationId, bizPhone: args.bizPhone, phone: args.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
+      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(args.compiled, step.nextId);
@@ -222,7 +256,7 @@ async function runAutoChain(args: {
       { _id: args.runId },
       {
         $set: {
-          currentNodeId: step.nextId, currentButtons: quickReplyButtons(node),
+          currentNodeId: step.nextId, currentButtons: nodeReplyOptions(node),
           lastTemplateMsgId: msgId, status: terminal ? 'completed' : 'active',
           updatedAt: new Date(), dueAt: null, dueNodeId: null,
         },
@@ -263,7 +297,7 @@ async function persistFlowMessage(opts: {
   msgId: string; conversationId: string | null; bizPhone: string; phone: string;
   status: 'sent' | 'failed';
   // A template send (default), a custom text message, or a media message.
-  templateName?: string; text?: string; kind?: 'template' | 'text';
+  templateName?: string; text?: string; kind?: 'template' | 'text' | 'interactive';
   media?: { type: 'image' | 'video'; displayUrl: string | null; caption?: string };
 }) {
   if (!opts.conversationId) return;
@@ -286,6 +320,12 @@ async function persistFlowMessage(opts: {
       mediaUrl:     opts.media.displayUrl,
       mediaCaption: opts.media.caption ?? null,
       text:         opts.media.caption ?? `[Flow ${opts.media.type}]`,
+    }).onConflictDoNothing();
+  } else if (opts.kind === 'interactive') {
+    await db.insert(messages).values({
+      ...base,
+      type:         'interactive',
+      text:         opts.text ?? '',
     }).onConflictDoNothing();
   } else {
     const isText = opts.kind === 'text';
@@ -346,8 +386,9 @@ export async function startRun(opts: {
     contactId:         opts.contactId,
     conversationId:    opts.conversationId,
     currentNodeId:     opts.rootNodeId,
-    currentButtons:    quickReplyButtons(rootNode),
+    currentButtons:    nodeReplyOptions(rootNode),
     lastTemplateMsgId: msgId,
+    rootMsgId:         waId ?? null,
     status:            'active',
     startedAt:         now,
     updatedAt:         now,
@@ -355,7 +396,7 @@ export async function startRun(opts: {
     dueAt:             null,
     dueNodeId:         null,
   } satisfies Omit<FlowRun, '_id'>);
-  console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(quickReplyButtons(rootNode))}`);
+  console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(nodeReplyOptions(rootNode))}`);
 
   // Honour any auto-steps right after the root (Delay waits / text messages).
   await runAutoChain({
@@ -422,7 +463,7 @@ export async function advanceRunOnButton(opts: {
     await persistFlowMessage({
       msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone, phone: opts.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
+      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(compiled, nextId);
@@ -431,7 +472,7 @@ export async function advanceRunOnButton(opts: {
       {
         $set: {
           currentNodeId:     nextId,
-          currentButtons:    quickReplyButtons(nextNode),
+          currentButtons:    nodeReplyOptions(nextNode),
           lastTemplateMsgId: msgId,
           status:            terminal ? 'completed' : 'active',
           updatedAt:         new Date(),
@@ -496,7 +537,7 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
     await persistFlowMessage({
       msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, phone: run.phone,
       status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
+      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
     });
 
     const terminal = !hasOnward(compiled, nodeId);
@@ -505,7 +546,7 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
       {
         $set: {
           currentNodeId:     nodeId,
-          currentButtons:    quickReplyButtons(node),
+          currentButtons:    nodeReplyOptions(node),
           lastTemplateMsgId: msgId,
           status:            terminal ? 'completed' : 'active',
           updatedAt:         new Date(),
@@ -527,4 +568,78 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
   }
 
   return { fired };
+}
+
+/* ── Flow tracking (delivery + funnel analytics) ─────────────────────────────── */
+
+export interface FunnelStep { nodeId: string; label: string; type: string; count: number }
+export interface FlowTracking {
+  sent: number;          // users the flow was launched to (one run each)
+  delivered: number;     // root message confirmed delivered/read by WhatsApp
+  started: number;       // runs that advanced past the root at least once
+  completed: number;     // runs that reached a flow endpoint
+  active: number;        // runs still in progress
+  stopped: number;       // runs superseded by a newer launch
+  total: number;
+  funnel: FunnelStep[];  // sendable nodes (root → deeper), with how many runs reached each
+}
+
+/**
+ * Analytics for a single flow: launch/delivery/engagement counts plus a per-node
+ * funnel of how far runs travelled. Delivery comes from the root message's
+ * WhatsApp status; the funnel from the nodes each run has occupied.
+ */
+export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
+  const runs = await runsColl();
+  const flows = await flowsColl();
+
+  const [active, completed, stopped, started] = await Promise.all([
+    runs.countDocuments({ flowId, status: 'active' }),
+    runs.countDocuments({ flowId, status: 'completed' }),
+    runs.countDocuments({ flowId, status: 'stopped' }),
+    runs.countDocuments({ flowId, 'steps.0': { $exists: true } }),
+  ]);
+  const total = active + completed + stopped;
+
+  // Delivered: how many runs' root messages WhatsApp confirmed delivered/read.
+  const rootDocs = await runs
+    .find({ flowId, rootMsgId: { $ne: null } }, { projection: { rootMsgId: 1 } })
+    .toArray();
+  const rootIds = rootDocs.map(r => r.rootMsgId).filter((x): x is string => !!x);
+  let delivered = 0;
+  if (rootIds.length) {
+    const [row] = await db
+      .select({ n: count() })
+      .from(messages)
+      .where(and(inArray(messages.id, rootIds), inArray(messages.status, ['delivered', 'read'])));
+    delivered = row?.n ?? 0;
+  }
+
+  // Per-node reach: a run "reached" the root node and every node it advanced to.
+  const reachAgg = await runs.aggregate<{ _id: string; count: number }>([
+    { $match: { flowId } },
+    { $project: { nodes: { $setUnion: [['$rootNodeId'], { $map: { input: { $ifNull: ['$steps', []] }, as: 's', in: '$$s.toNode' } }] } } },
+    { $unwind: '$nodes' },
+    { $group: { _id: '$nodes', count: { $sum: 1 } } },
+  ]).toArray();
+  const reachByNode = new Map<string, number>(reachAgg.map(r => [r._id, r.count]));
+
+  // Order the funnel along the flow spine (root → deeper).
+  let funnel: FunnelStep[] = [];
+  try {
+    const flowDoc = await flows.findOne({ _id: new ObjectId(flowId) });
+    if (flowDoc) {
+      const flow = flowDoc as unknown as Flow;
+      const roots = findRootNodes(flow);
+      const rootId = (flowDoc.rootNodeId && roots.includes(flowDoc.rootNodeId)) ? flowDoc.rootNodeId : roots[0];
+      if (rootId) {
+        funnel = orderedSendableNodes(flow, rootId).map(nodeId => {
+          const node = flow.nodes.find(n => n.id === nodeId);
+          return { nodeId, label: nodeShortLabel(node), type: node?.type ?? 'node', count: reachByNode.get(nodeId) ?? 0 };
+        });
+      }
+    }
+  } catch { /* funnel is best-effort */ }
+
+  return { sent: total, delivered, started, completed, active, stopped, total, funnel };
 }

@@ -7,6 +7,7 @@ import { CheckCircle2, Clock, XCircle, Plus, Send, X, Phone, AlertCircle, Shoppi
 import CreateTemplateModal from './CreateTemplateModal';
 import TemplateHistory from './templates/TemplateHistory';
 import TemplateMessageForm from './templates/TemplateMessageForm';
+import CustomMessages from './messages/CustomMessages';
 import type { TemplateMessage } from '@/lib/templates';
 import { TemplateGridSkeleton } from '@/components/ui/Skeletons';
 
@@ -882,11 +883,17 @@ export default function TemplatesPage() {
   const [activeTemplate,  setActiveTemplate]  = useState<Template | null>(null);
   const [editTemplate,    setEditTemplate]    = useState<Template | null>(null);
   const [showCreate,      setShowCreate]      = useState(false);
-  const [tab,             setTab]             = useState<'templates' | 'messages' | 'history'>('templates');
+  const [tab,             setTab]             = useState<'templates' | 'custom' | 'messages' | 'history'>('templates');
 
   useEffect(() => {
     dispatch(fetchTemplates());
   }, [dispatch]);
+
+  // Open a specific tab from ?tab= (used by the sidebar Messages links).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'custom' || t === 'messages' || t === 'history' || t === 'templates') setTab(t);
+  }, []);
 
   const approved = templates.filter((t) => t.status === 'APPROVED');
   const pending  = templates.filter((t) => t.status === 'PENDING');
@@ -934,7 +941,7 @@ export default function TemplatesPage() {
         </div>
         {/* Tabs */}
         <div className="flex gap-1">
-          {(['templates', 'messages', 'history'] as const).map((t) => (
+          {(['templates', 'custom', 'messages', 'history'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -944,14 +951,16 @@ export default function TemplatesPage() {
                   : 'text-gray-500 dark:text-[#8696a0] hover:bg-gray-100 dark:hover:bg-[#2a3942]'
               }`}
             >
-              {t === 'templates' ? 'Templates' : t === 'messages' ? 'Messages' : 'Recents'}
+              {t === 'templates' ? 'Templates' : t === 'custom' ? 'Custom' : t === 'messages' ? 'Messages' : 'Recents'}
             </button>
           ))}
         </div>
       </div>
 
       <div className="p-6">
-        {tab === 'messages' ? (
+        {tab === 'custom' ? (
+          <CustomMessages />
+        ) : tab === 'messages' ? (
           <MessagesTab templates={templates} />
         ) : tab === 'history' ? (
           <TemplateHistory />

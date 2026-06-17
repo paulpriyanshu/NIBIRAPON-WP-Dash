@@ -4,6 +4,8 @@ import { agentSettings, catalogProducts, categories as categoriesTable, type Pro
 import { eq, and, isNotNull, asc } from 'drizzle-orm';
 import { agentDraftsColl, templateMessagesColl, toObjectId } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
+import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
+import { customMessageOptions, renderCustomPreview, type CustomMessage } from '@/lib/custom-messages';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API });
 
@@ -37,7 +39,7 @@ interface ResolvedTemplateDraft {
   config: TemplateMessageConfig;
   preview: string;
 }
-export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; shouldRespond: boolean; }
+export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; customMessage?: CustomMessage; shouldRespond: boolean; }
 
 type ProductRow = typeof catalogProducts.$inferSelect;
 
@@ -118,8 +120,10 @@ async function getContextData(userMessage: string): Promise<{
   draftsContext: string;
   templateDraftsContext: string;
   templateDrafts: ResolvedTemplateDraft[];
+  customMessages: CustomMessage[];
+  customMessagesContext: string;
 }> {
-  const [settingsRow, draftDocs, products, categoryRows] = await Promise.all([
+  const [settingsRow, draftDocs, products, categoryRows, customMsgDocs] = await Promise.all([
     db.select().from(agentSettings).limit(1).then(r => r[0]),
     agentDraftsColl().then(c => c.find({ isActive: true }).toArray()).catch(() => []),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
@@ -133,7 +137,21 @@ async function getContextData(userMessage: string): Promise<{
       .where(eq(categoriesTable.inAgentContext, true))
       .orderBy(asc(categoriesTable.sortOrder), asc(categoriesTable.name))
       .catch(() => [] as AgentCategory[]),
+    customMessagesColl().then(c => c.find({ isActive: true }).sort({ updatedAt: -1 }).toArray()).catch(() => []),
   ]);
+
+  const customMessages: CustomMessage[] = (customMsgDocs as any[]).map(serializeCustomMessage);
+  let customMessagesContext = '';
+  if (customMessages.length > 0) {
+    const list = customMessages.map(m => {
+      const opts = customMessageOptions(m);
+      const head = `- [custom message id: ${m.id}] "${m.name}" (${m.type})`;
+      const preview = renderCustomPreview(m).split('\n').map(l => `    ${l}`).join('\n');
+      const optLine = opts.length ? `\n    Options: ${opts.join(' | ')}` : '';
+      return `${head}\n${preview}${optLine}`;
+    }).join('\n');
+    customMessagesContext = `## Custom messages you can send (call send_custom_message with the id). Use a list/buttons message to ASK the customer a question with options:\n${list}`;
+  }
 
   const agentName      = settingsRow?.agentName    ?? 'Riya';
   const settingsPrompt = settingsRow?.systemPrompt ?? '';
@@ -206,12 +224,14 @@ async function getContextData(userMessage: string): Promise<{
     draftsContext,
     templateDraftsContext,
     templateDrafts,
+    customMessages,
+    customMessagesContext,
   };
 }
 
 // ── Base system prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, extra: string, categories: AgentCategory[]): string {
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, customMsgsCtx: string, extra: string, categories: AgentCategory[]): string {
   const categoryLine = categories.length
     ? categories.map(c => c.name + (c.imageUrl || c.imageAssetId ? ' 🖼️' : '')).join(', ')
     : '(none configured)';
@@ -248,9 +268,13 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 ## Sending a saved template
 - When the situation matches a template's "Send when" note below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short text reply too. Only use ids listed below.
 
+## Sending a custom message
+- When a saved custom message below fits — especially an options list or buttons to ask the customer to choose (e.g. a category, a size, yes/no) — call \`send_custom_message\` with its id. Still write a short text reply too. Only use ids listed below; never invent them.
+
 ${catalogCtx ? catalogCtx + '\n' : ''}
 ${draftsCtx  ? draftsCtx  + '\n' : ''}
 ${templateDraftsCtx ? templateDraftsCtx + '\n' : ''}
+${customMsgsCtx ? customMsgsCtx + '\n' : ''}
 ${extra      ? '## Additional instructions from admin:\n' + extra : ''}
 `.trim();
 }
@@ -329,6 +353,19 @@ const SEND_TEMPLATE_DRAFT_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
+const SEND_CUSTOM_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'send_custom_message',
+    description: "Send a saved custom message (option list, reply buttons, text, or media) to the customer — e.g. to ask them to pick from options. Use only ids from the custom messages list.",
+    parameters: {
+      type: 'object',
+      properties: { custom_message_id: { type: 'string', description: 'The custom message id from the list.' } },
+      required: ['custom_message_id'],
+    },
+  },
+};
+
 /** Build a WhatsApp list from the inventory categories, with their images. */
 function buildCategoryList(categories: AgentCategory[]): AgentListOut | undefined {
   const rows = categories.slice(0, 10).map(c => ({ id: `category:${c.name}`, title: c.name.slice(0, 24) }));
@@ -359,10 +396,10 @@ export async function runAgent(
 ): Promise<AgentResult> {
   if (!isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
 
-  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts } =
+  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts, customMessages, customMessagesContext } =
     await getContextData(userMessage);
 
-  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, settingsPrompt, categories);
+  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, customMessagesContext, settingsPrompt, categories);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -376,22 +413,27 @@ export async function runAgent(
       messages,
       max_tokens:  400,
       temperature: 0.85,
-      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL, SEND_TEMPLATE_DRAFT_TOOL],
+      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL, SEND_TEMPLATE_DRAFT_TOOL, SEND_CUSTOM_MESSAGE_TOOL],
       tool_choice: 'auto',
     });
 
     const choice = response.choices[0]?.message;
     const reply  = choice?.content?.trim() ?? '';
 
-    // Gather product ids, a list request, and any template draft to send.
+    // Gather product ids, a list request, a template draft, and a custom message to send.
     const ids: string[] = [];
     let wantsList = false;
     let draftId: string | undefined;
+    let customId: string | undefined;
     for (const tc of choice?.tool_calls ?? []) {
       if (tc.type !== 'function') continue;
       if (tc.function.name === 'send_category_list') { wantsList = true; continue; }
       if (tc.function.name === 'send_template_draft') {
         try { draftId = String(JSON.parse(tc.function.arguments || '{}').draft_id || ''); } catch { /* ignore */ }
+        continue;
+      }
+      if (tc.function.name === 'send_custom_message') {
+        try { customId = String(JSON.parse(tc.function.arguments || '{}').custom_message_id || ''); } catch { /* ignore */ }
         continue;
       }
       if (tc.function.name !== 'send_product_media') continue;
@@ -411,7 +453,9 @@ export async function runAgent(
       }
     }
 
-    return { reply, media, list, template, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template };
+    const customMessage = customId ? customMessages.find(x => x.id === customId) : undefined;
+
+    return { reply, media, list, template, customMessage, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template || !!customMessage };
   } catch (err) {
     console.error('[agent] OpenAI error:', err instanceof Error ? err.message : err);
     return { reply: '', media: [], shouldRespond: false };

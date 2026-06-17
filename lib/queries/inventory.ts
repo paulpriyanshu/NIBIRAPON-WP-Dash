@@ -93,3 +93,108 @@ export async function getAllInventory() {
 export async function getAllCategories() {
   return db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.name));
 }
+
+/* ── Public storefront queries ───────────────────────────────────────────────
+ * Read-only views for the public catalog API. Only active products/variants, and
+ * none of the internal-only columns (customInfo, inAgentContext, embedding…).
+ */
+const publicProductColumns = {
+  id:                catalogProducts.id,
+  name:              catalogProducts.name,
+  description:       catalogProducts.description,
+  priceRange:        catalogProducts.priceRange,
+  category:          catalogProducts.category,
+  categoryId:        catalogProducts.categoryId,
+  fabric:            catalogProducts.fabric,
+  occasions:         catalogProducts.occasions,
+  media:             catalogProducts.media,
+  parentId:          catalogProducts.parentId,
+  variantAttributes: catalogProducts.variantAttributes,
+  createdAt:         catalogProducts.createdAt,
+} as const;
+
+/** Active variants for the given parent product IDs, grouped by parentId. */
+async function activeVariantsByParent(parentIds: string[]) {
+  const rows = parentIds.length
+    ? await db
+        .select(publicProductColumns)
+        .from(catalogProducts)
+        .where(and(inArray(catalogProducts.parentId, parentIds), eq(catalogProducts.isActive, true)))
+        .orderBy(asc(catalogProducts.createdAt), asc(catalogProducts.id))
+    : [];
+  const map = new Map<string, typeof rows>();
+  for (const v of rows) {
+    if (!v.parentId) continue;
+    const arr = map.get(v.parentId) ?? [];
+    arr.push(v);
+    map.set(v.parentId, arr);
+  }
+  return map;
+}
+
+/**
+ * One page of active, top-level products (newest first) with a next cursor —
+ * each carrying its active variants. Optionally filtered by category.
+ */
+export async function getPublicProductsPage(
+  { limit = 30, cursor = null, categoryId = null }:
+  { limit?: number; cursor?: string | null; categoryId?: string | null },
+) {
+  const lim = Math.min(Math.max(limit, 1), 100);
+  const cur = decodeCursor(cursor);
+
+  const keyset = cur
+    ? or(
+        lt(catalogProducts.createdAt, new Date(cur.ms)),
+        and(eq(catalogProducts.createdAt, new Date(cur.ms)), lt(catalogProducts.id, cur.id)),
+      )
+    : undefined;
+  const where = and(
+    isNull(catalogProducts.parentId),
+    eq(catalogProducts.isActive, true),
+    categoryId ? eq(catalogProducts.categoryId, categoryId) : undefined,
+    keyset,
+  );
+
+  const rows = await db
+    .select(publicProductColumns)
+    .from(catalogProducts)
+    .where(where)
+    .orderBy(desc(catalogProducts.createdAt), desc(catalogProducts.id))
+    .limit(lim + 1);
+
+  const page = rows.slice(0, lim);
+  const last = page[page.length - 1];
+  const nextCursor = rows.length > lim && last ? encodeCursor(last.createdAt, last.id) : null;
+
+  const variants = await activeVariantsByParent(page.map(p => p.id));
+  const items = page.map(p => ({ ...p, variants: variants.get(p.id) ?? [] }));
+  return { items, nextCursor };
+}
+
+/** A single active product (or variant) by ID, with its active variants attached. */
+export async function getPublicProductById(id: string) {
+  const [product] = await db
+    .select(publicProductColumns)
+    .from(catalogProducts)
+    .where(and(eq(catalogProducts.id, id), eq(catalogProducts.isActive, true)))
+    .limit(1);
+  if (!product) return null;
+  const variants = await activeVariantsByParent([product.id]);
+  return { ...product, variants: variants.get(product.id) ?? [] };
+}
+
+/** Categories for the public storefront (no internal flags). */
+export async function getPublicCategories() {
+  return db
+    .select({
+      id:           categories.id,
+      name:         categories.name,
+      description:  categories.description,
+      imageUrl:     categories.imageUrl,
+      imageAssetId: categories.imageAssetId,
+      sortOrder:    categories.sortOrder,
+    })
+    .from(categories)
+    .orderBy(asc(categories.sortOrder), asc(categories.name));
+}
