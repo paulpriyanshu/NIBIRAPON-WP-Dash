@@ -48,7 +48,12 @@ async function graphRequest(method: string, endpoint: string, body?: object) {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.error?.message || `WhatsApp API error: ${res.status}`);
+    const e = data.error || {};
+    // error_data.details carries the specific reason (e.g. why an order_details
+    // / payment message was rejected) — surface it so failures are debuggable.
+    const detail = e.error_data?.details ? ` — ${e.error_data.details}` : '';
+    const code   = e.code ? ` (code ${e.code})` : '';
+    throw new Error(`${e.message || `WhatsApp API error: ${res.status}`}${detail}${code}`);
   }
   return data;
 }
@@ -273,18 +278,14 @@ export async function sendCheckoutTemplate({
     return base;
   });
 
+  // Meta's MANAGED payment configuration (WhatsApp Manager → Payment configurations).
+  // The order_details message references the configuration by name + the p2m gateway,
+  // not the older inline self-integration `payment_settings` block.
   const parameters: Record<string, any> = {
     reference_id: referenceId,
     type:         'physical-goods',
-    payment_settings: [
-      {
-        type: 'payment_gateway',
-        payment_gateway: {
-          type:               'razorpay',
-          configuration_name: razorpayConfigName,
-        },
-      },
-    ],
+    payment_type: 'p2m-lite:razorpay',
+    payment_configuration: razorpayConfigName,
     currency,
     total_amount: { value: totalAmountInPaise, offset: 100 },
     order: {
@@ -293,7 +294,6 @@ export async function sendCheckoutTemplate({
       items:    orderItems,
       subtotal: { value: totalAmountInPaise, offset: 100 },
       tax:      { value: 0, offset: 100 },
-      shipping: { value: 0, offset: 100 },
     },
   };
 
