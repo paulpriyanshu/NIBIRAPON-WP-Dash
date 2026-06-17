@@ -258,7 +258,7 @@ export async function sendCheckoutTemplate({
   // Guard against the env being set to the literal var name (a common copy-paste slip)
   // or left blank — both fall back to the actual config "textpayment".
   const rawCfg = process.env.RAZORPAY_WHATSAPP_CONFIG;
-  const paymentConfig = rawCfg && rawCfg !== 'RAZORPAY_WHATSAPP_CONFIG' ? rawCfg : 'textpayment';
+  const paymentConfig = rawCfg && rawCfg !== 'RAZORPAY_WHATSAPP_CONFIG' ? rawCfg : 'newconfig';
   // Payment method/rail per the WhatsApp IN Payments "Send Order Details" sample
   // (e.g. "upi"). Overridable in case the gateway expects a different value.
   const paymentType = process.env.WHATSAPP_PAYMENT_TYPE || 'upi';
