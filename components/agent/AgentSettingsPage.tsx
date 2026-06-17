@@ -4,7 +4,7 @@ import {
   Bot, Package, MessageSquarePlus, Save, Plus, Trash2,
   Pencil, Check, Loader2, ChevronDown, ChevronUp,
   Sparkles, Info, Tag, Layers, Calendar, ArrowUpRight,
-  StickyNote, ImageIcon, Film,
+  StickyNote, ImageIcon, Film, Star,
 } from 'lucide-react';
 import NextLink from 'next/link';
 import type { TemplateMessage } from '@/lib/templates';
@@ -23,7 +23,7 @@ interface Product {
   priceRange: string | null; category: string | null;
   fabric: string | null; occasions: string | null;
   media: ProductMedia[]; customInfo: string | null;
-  isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
+  isActive: boolean; inAgentContext: boolean; featured: boolean; syncedAt: string | null;
 }
 
 interface Draft {
@@ -175,6 +175,18 @@ function CatalogTab() {
     load();
   };
 
+  const toggleFeatured = async (p: Product) => {
+    setTogglingId(p.id);
+    // optimistic
+    setProducts(prev => prev.map(x => x.id === p.id ? { ...x, featured: !x.featured } : x));
+    await fetch(`/api/inventory/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featured: !p.featured }),
+    });
+    setTogglingId(null);
+    load();
+  };
+
   const sync = async () => {
     setSyncing(true); setSyncResult('');
     const res = await fetch('/api/agent/sync', { method: 'POST' });
@@ -259,6 +271,11 @@ function CatalogTab() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="text-white text-xs font-medium truncate">{p.name}</p>
+                      {p.featured && (
+                        <span className="text-[9px] bg-amber-400/20 text-amber-300 px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
+                          <Star size={8} className="fill-amber-300" /> Push
+                        </span>
+                      )}
                       {p.inAgentContext && p.syncedAt && (
                         <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full shrink-0">Synced</span>
                       )}
@@ -278,6 +295,21 @@ function CatalogTab() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                    {p.inAgentContext && (
+                      <button
+                        onClick={() => toggleFeatured(p)}
+                        disabled={togglingId === p.id}
+                        title={p.featured ? 'Riya actively recommends this product — click to stop pushing' : 'Mark as a hero product Riya should actively recommend'}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all disabled:opacity-50 ${
+                          p.featured
+                            ? 'bg-amber-400/15 text-amber-300 border border-amber-400/30 hover:bg-amber-400/25'
+                            : 'bg-white/5 text-white/40 border border-white/10 hover:text-amber-300 hover:border-amber-400/30'
+                        }`}
+                      >
+                        <Star size={10} className={p.featured ? 'fill-amber-300' : ''} />
+                        {p.featured ? 'Pushing' : 'Push'}
+                      </button>
+                    )}
                     <button
                       onClick={() => toggleContext(p)}
                       disabled={togglingId === p.id}

@@ -439,6 +439,8 @@ export const catalogProducts = pgTable('catalog_products', {
   isActive:    boolean('is_active').notNull().default(true),
   // Whether this product is exposed to the AI agent's context
   inAgentContext: boolean('in_agent_context').notNull().default(false),
+  // Hero/"push" product: the owner wants the agent to actively recommend this one
+  featured:    boolean('featured').notNull().default(false),
   // Embedding stored as JSON number array (cosine similarity computed in app)
   embedding:   jsonb('embedding').$type<number[]>(),
   syncedAt:    timestamp('synced_at', { withTimezone: true }),

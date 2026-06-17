@@ -82,6 +82,22 @@ function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; 
             <input value={d.name} onChange={e => set({ name: e.target.value })} placeholder="e.g. Pick a category" className={fieldCls} />
           </div>
 
+          {/* Agent guidance — so Riya knows what this is and when to send it */}
+          <div className="rounded-lg border border-wp-green/30 bg-wp-green/5 p-3 space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block mb-1.5">What is this message for? <span className="text-gray-400 normal-case font-normal">(helps the AI agent)</span></label>
+              <textarea value={d.agentDescription ?? ''} onChange={e => set({ agentDescription: e.target.value })} rows={2}
+                placeholder="e.g. Asks the customer which saree category they want — the opening question before showing products"
+                className={`${fieldCls} resize-none`} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block mb-1.5">When should the agent send it?</label>
+              <textarea value={d.triggerHint ?? ''} onChange={e => set({ triggerHint: e.target.value })} rows={2}
+                placeholder="e.g. Early in the chat when the customer is browsing or unsure what they want"
+                className={`${fieldCls} resize-none`} />
+            </div>
+          </div>
+
           {/* type selector */}
           <div className="grid grid-cols-4 gap-2">
             {(Object.keys(TYPE_META) as CustomMessageType[]).map(t => {

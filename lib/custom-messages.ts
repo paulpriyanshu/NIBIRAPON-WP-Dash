@@ -27,6 +27,8 @@ export interface CustomMessage {
   listButton?: string;                 // list opener label (≤20)
   sections?: CustomMessageSection[];   // list (≤10 rows total) — manual options
   optionSource?: OptionSource;         // list/buttons: where options come from
+  agentDescription?: string;           // what this message is for — helps the agent pick it
+  triggerHint?: string;                // when the agent should send it
   isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -65,6 +67,8 @@ export function cleanCustomMessage(input: any): Omit<CustomMessage, 'id' | 'crea
   const out: Omit<CustomMessage, 'id' | 'createdAt' | 'updatedAt'> = {
     name: String(input?.name ?? '').trim() || 'Untitled message',
     type,
+    agentDescription: input?.agentDescription ? String(input.agentDescription).trim() : undefined,
+    triggerHint:      input?.triggerHint      ? String(input.triggerHint).trim()      : undefined,
     isActive: input?.isActive === undefined ? true : !!input.isActive,
   };
 

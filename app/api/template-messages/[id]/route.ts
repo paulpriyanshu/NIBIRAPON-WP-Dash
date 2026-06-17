@@ -7,13 +7,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const _id = toObjectId(id);
     if (!_id) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
-    const { name, templateName, language, config, preview } = await req.json();
+    const { name, templateName, language, config, preview, agentDescription, whenToSend } = await req.json();
     const set: Record<string, unknown> = { updatedAt: new Date() };
-    if (name         !== undefined) set.name = name;
-    if (templateName !== undefined) set.templateName = templateName;
-    if (language     !== undefined) set.language = language;
-    if (config       !== undefined) set.config = config;
-    if (preview      !== undefined) set.preview = preview;
+    if (name             !== undefined) set.name = name;
+    if (templateName     !== undefined) set.templateName = templateName;
+    if (language         !== undefined) set.language = language;
+    if (config           !== undefined) set.config = config;
+    if (preview          !== undefined) set.preview = preview;
+    if (agentDescription !== undefined) set.agentDescription = agentDescription?.trim() || undefined;
+    if (whenToSend       !== undefined) set.whenToSend = whenToSend?.trim() || undefined;
 
     const coll = await templateMessagesColl();
     await coll.updateOne({ _id }, { $set: set });

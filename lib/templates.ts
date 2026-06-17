@@ -27,6 +27,8 @@ export interface TemplateMessage {
   language: string;
   config: TemplateMessageConfig;
   preview: string;
+  agentDescription?: string;  // what this template is for — helps the agent identify it (names don't match content)
+  whenToSend?: string;        // when the agent should send it
   createdAt?: string;
   updatedAt?: string;
 }

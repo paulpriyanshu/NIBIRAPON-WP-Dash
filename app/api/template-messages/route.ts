@@ -13,20 +13,22 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, templateName, language, config, preview } = await req.json();
+    const { name, templateName, language, config, preview, agentDescription, whenToSend } = await req.json();
     if (!name?.trim())     return NextResponse.json({ error: 'name is required' }, { status: 400 });
     if (!templateName)     return NextResponse.json({ error: 'templateName is required' }, { status: 400 });
 
     const now = new Date();
     const coll = await templateMessagesColl();
     const result = await coll.insertOne({
-      name:         name.trim(),
+      name:             name.trim(),
       templateName,
-      language:     language || 'en',
-      config:       config ?? {},
-      preview:      preview ?? '',
-      createdAt:    now,
-      updatedAt:    now,
+      language:         language || 'en',
+      config:           config ?? {},
+      preview:          preview ?? '',
+      agentDescription: agentDescription?.trim() || undefined,
+      whenToSend:       whenToSend?.trim() || undefined,
+      createdAt:        now,
+      updatedAt:        now,
     });
 
     return NextResponse.json({ id: result.insertedId.toString() }, { status: 201 });

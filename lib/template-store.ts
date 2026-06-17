@@ -13,6 +13,8 @@ export interface TemplateMessageDoc extends Document {
   language: string;
   config: TemplateMessageConfig;
   preview: string;
+  agentDescription?: string;  // what this template is for (helps the agent pick it)
+  whenToSend?: string;        // when the agent should send it
   createdAt: Date;
   updatedAt: Date;
 }

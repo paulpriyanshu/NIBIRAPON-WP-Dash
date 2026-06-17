@@ -16,6 +16,8 @@ export interface CustomMessageDoc extends Document {
   buttons?: CustomMessage['buttons'];
   listButton?: string;
   sections?: CustomMessage['sections'];
+  agentDescription?: string;
+  triggerHint?: string;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
