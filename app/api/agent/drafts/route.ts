@@ -13,7 +13,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, kind = 'text', content, triggerHint, templateMessageId } = await req.json();
+    const { name, kind = 'text', content, triggerHint, description, templateMessageId } = await req.json();
     if (!name?.trim()) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
       kind,
       content:           kind === 'template' ? '' : content.trim(),
       triggerHint:       triggerHint || null,
+      description:       description?.trim() || null,
       templateMessageId: kind === 'template' ? templateMessageId : undefined,
       isActive:          true,
       createdAt:         now,
