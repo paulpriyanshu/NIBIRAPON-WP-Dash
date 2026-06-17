@@ -353,11 +353,22 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   }
 
   // A tap on a dynamic custom-message option (category/product) that NO flow branch
-  // consumed → auto-reply with that item's images + details (category drills into
-  // its products). Flow branching takes priority; this is the fallback.
+  // consumed. Flow branching takes priority; this is the fallback.
   if (!flowAdvanced && isButtonTap && templateData?.buttonId?.startsWith('cmopt:')) {
+    const bid = templateData.buttonId;
+    const prodTap = /^cmopt:product:(.+)$/.exec(bid);
+    // Product tap → let the AI present it conversationally (warm text + photos +
+    // a follow-up question) instead of a cold data dump. Category tap (or agent off)
+    // → deterministic drill-down into that category's products.
+    if (prodTap && conv?.agentEnabled) {
+      await agentReply({
+        conversationId, toPhone: fromPhone, bizPhone: phoneNumberId,
+        userText: '', focusProductId: prodTap[1],
+      }).catch(err => console.error('[agent-reply]', err));
+      return;
+    }
     const handled = await handleCustomOptionPick({
-      buttonId: templateData.buttonId, toPhone: fromPhone, bizPhone: phoneNumberId, conversationId,
+      buttonId: bid, toPhone: fromPhone, bizPhone: phoneNumberId, conversationId,
     }).catch(err => { console.error('[cmopt]', err); return false; });
     if (handled) return;
   }
@@ -385,13 +396,15 @@ async function agentReply({
   toPhone,
   bizPhone,
   userText,
+  focusProductId,
 }: {
   conversationId: string;
   toPhone: string;
   bizPhone: string;
   userText: string;
+  focusProductId?: string;
 }) {
-  console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}"`);
+  console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}" focus=${focusProductId ?? 'none'}`);
 
   // Most recent 30 messages as context, then put them back in chronological order.
   // (Ordering desc + limit gets the LATEST 30; asc + limit would wrongly grab the
@@ -410,7 +423,7 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory);
+  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory, { focusProductId });
   console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} custom=${customMessage?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;

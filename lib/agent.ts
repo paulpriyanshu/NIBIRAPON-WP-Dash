@@ -22,6 +22,7 @@ export interface AgentListOut {
 
 /** A product category exposed to the agent, with its image for visual browsing. */
 interface AgentCategory {
+  id: string;
   name: string;
   description: string | null;
   imageUrl: string | null;
@@ -86,6 +87,16 @@ async function getRelevantProducts(query: string, topN = 5): Promise<ProductRow[
     .map(({ p }) => p);
 }
 
+/** Fetch one active product by id — used to pin a product the customer tapped. */
+async function getProductById(id: string): Promise<ProductRow | null> {
+  const [p] = await db
+    .select()
+    .from(catalogProducts)
+    .where(and(eq(catalogProducts.id, id), eq(catalogProducts.isActive, true)))
+    .limit(1);
+  return p ?? null;
+}
+
 /** Render the relevant products into a catalog block for the system prompt. */
 function formatCatalogContext(products: ProductRow[]): string {
   if (products.length === 0) return '';
@@ -111,7 +122,7 @@ function formatCatalogContext(products: ProductRow[]): string {
 
 // ── Fetch agent settings + drafts ────────────────────────────────────────────
 
-async function getContextData(userMessage: string): Promise<{
+async function getContextData(userMessage: string, focusProductId?: string): Promise<{
   settingsPrompt: string;
   agentName: string;
   products: ProductRow[];
@@ -128,6 +139,7 @@ async function getContextData(userMessage: string): Promise<{
     agentDraftsColl().then(c => c.find({ isActive: true }).toArray()).catch(() => []),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
     db.select({
+        id:           categoriesTable.id,
         name:         categoriesTable.name,
         description:  categoriesTable.description,
         imageUrl:     categoriesTable.imageUrl,
@@ -139,6 +151,14 @@ async function getContextData(userMessage: string): Promise<{
       .catch(() => [] as AgentCategory[]),
     customMessagesColl().then(c => c.find({ isActive: true }).sort({ updatedAt: -1 }).toArray()).catch(() => []),
   ]);
+
+  // Pin the product the customer is asking about (e.g. tapped from a list) so it's
+  // always in context, even if semantic search didn't surface it.
+  let pinnedProducts = products;
+  if (focusProductId && !products.some(p => p.id === focusProductId)) {
+    const focused = await getProductById(focusProductId);
+    if (focused) pinnedProducts = [focused, ...products];
+  }
 
   const customMessages: CustomMessage[] = (customMsgDocs as any[]).map(serializeCustomMessage);
   let customMessagesContext = '';
@@ -218,9 +238,9 @@ async function getContextData(userMessage: string): Promise<{
   return {
     settingsPrompt,
     agentName,
-    products,
+    products: pinnedProducts,
     categories,
-    catalogContext: formatCatalogContext(products),
+    catalogContext: formatCatalogContext(pinnedProducts),
     draftsContext,
     templateDraftsContext,
     templateDrafts,
@@ -246,24 +266,29 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 
 ## Rules
 1. Reply in the SAME language the customer uses (Hindi / Hinglish / English).
-2. Keep replies short and conversational (2-4 sentences unless detail is asked).
-3. ALWAYS use the recent conversation above for context. The customer usually answers your previous question with a short message — e.g. "UPI", "COD", "card", a name, a phone number, a pincode, or an address like "New Delhi B3 17". These are part of the ongoing order conversation — accept and act on them. NEVER treat them as off-topic.
-4. Stay focused on sarees, ethnic wear, and helping the customer buy. Only when the customer CLEARLY switches to an unrelated topic (weather, politics, coding, etc.) reply: "I can only help with sarees and Nibirapon products 😊". When unsure, assume it IS related and keep helping — do not refuse.
-5. Never mention competitor brands.
-6. If you don't know a specific price or product, say so honestly.
-7. When the customer wants to buy, guide them step by step: confirm which saree, then ask for the delivery address and payment method one at a time, and once you have them, share the payment details / next step.
-8. Never ignore or reject a delivery address or payment method the customer gives you.
-9. If a pre-written message in the DRAFTS section matches the situation (e.g. payment / UPI QR, shipping, returns), send it verbatim.
+2. Keep replies short, warm and conversational (2-4 sentences unless detail is asked). You are a real, friendly salesperson — NEVER just dump products, lists or photos with no words. Whenever something is sent to the customer (a photo, a list, product details), ALSO write a warm human sentence or two around it.
+3. ALWAYS END YOUR REPLY WITH A FOLLOW-UP QUESTION that moves the chat forward — e.g. offer to show other options or colours, give a recommendation, ask their occasion/budget, or nudge toward placing the order. Never end on a flat statement; always invite the next step.
+4. ALWAYS use the recent conversation above for context. The customer usually answers your previous question with a short message — e.g. "UPI", "COD", "card", a name, a phone number, a pincode, or an address like "New Delhi B3 17". These are part of the ongoing order conversation — accept and act on them. NEVER treat them as off-topic.
+5. Stay focused on sarees, ethnic wear, and helping the customer buy. Only when the customer CLEARLY switches to an unrelated topic (weather, politics, coding, etc.) reply: "I can only help with sarees and Nibirapon products 😊". When unsure, assume it IS related and keep helping — do not refuse.
+6. Never mention competitor brands.
+7. When the customer asks ANYTHING about a product (look, colour, fabric, drape, border, blouse, fit, styling), ANSWER IT using that product's title, description and its 📷 photo descriptions in the catalog below. Those photo descriptions tell you what each picture shows — treat them as your own eyes. NEVER paste a photo description to the customer; they are internal notes only. If a detail truly isn't in the info you have, say so honestly.
+8. When the customer wants to buy, guide them step by step: confirm which saree, then ask for the delivery address and payment method one at a time, and once you have them, share the payment details / next step.
+9. Never ignore or reject a delivery address or payment method the customer gives you.
+10. If a pre-written message in the DRAFTS section matches the situation (e.g. payment / UPI QR, shipping, returns), send it verbatim.
 
 ## Sending product photos
-- ALWAYS write a short text reply in your message content.
-- When the customer is interested in, asks about, or would benefit from seeing specific product(s) listed in the catalog below, ALSO call the \`send_product_media\` tool with those products' ids. Their photos/videos will be sent to the customer automatically.
+- ALWAYS write a warm, conversational text reply in your message content — describe the product in your own words and end with a follow-up question. Never send photos silently.
+- When the customer is interested in, asks about, or would benefit from seeing specific product(s) listed in the catalog below, ALSO call the \`send_product_media\` tool with those products' ids. Their photos/videos are sent automatically, captioned with the product title + description — so you don't repeat the title/description verbatim; instead add a friendly human touch and a question.
 - Only use ids that appear in the catalog section. Never invent ids. If no product is relevant, just reply with text and don't call the tool.
 
 ## Sending a category list
-- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. The categories that have an image (marked 🖼️ below) are sent as photos first, then a tappable WhatsApp list so they can pick one. When they pick a category, show that category's products.
+- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. The categories that have an image (marked 🖼️ below) are sent as photos first, then a tappable WhatsApp list so they can pick one. When they tap a category, its products are shown automatically as another tappable list — you don't need to do anything.
 - Lean on these category visuals when helping a customer browse — they make your messages richer.
 - Available categories: ${categoryLine}.
+
+## Sending a product list
+- When you want to offer a few specific products for the customer to choose between (e.g. they asked for "red silk sarees" and several fit), call the \`send_product_list\` tool with those products' ids. The customer gets a tappable list; when they tap a product, its photos, name and full details are sent automatically.
+- Prefer \`send_product_list\` (a tappable picker) when offering several products to choose from; use \`send_product_media\` when you just want to show one or two products' photos directly. Only use ids from the catalog section.
 
 ## Sending a saved template
 - When the situation matches a template's "Send when" note below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short text reply too. Only use ids listed below.
@@ -296,15 +321,23 @@ function collectMedia(products: ProductRow[], ids: string[]): AgentMediaOut[] {
   for (const id of ids) {
     const p = byId.get(id);
     if (!p) continue;
+    // Caption = product title + product description. The per-image `description`
+    // is INTERNAL context for the agent (so it knows what each photo shows without
+    // running vision) and must never be sent to the customer. Only the first photo
+    // of a product carries the caption; the rest follow uncaptioned to avoid repeats.
+    const productCaption = [p.name && `*${p.name}*`, p.description?.trim()]
+      .filter(Boolean)
+      .join('\n\n');
+    let first = true;
     for (const m of (p.media ?? []) as ProductMedia[]) {
       if (!m.url && !m.assetId) continue;
       out.push({
         type:    m.type,
         url:     m.url,
         assetId: m.assetId,
-        // Caption explains the photo; fall back to the product name.
-        caption: m.description || p.name,
+        caption: first ? (productCaption || undefined) : undefined,
       });
+      first = false;
     }
   }
   return out;
@@ -335,8 +368,27 @@ const SEND_LIST_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: 'function',
   function: {
     name: 'send_category_list',
-    description: "Send the customer a tappable WhatsApp list of product categories so they can pick one. Use when they want to browse or aren't sure what they want.",
+    description: "Send the customer a tappable WhatsApp list of product categories so they can pick one. When they tap a category, its products are shown automatically. Use when they want to browse or aren't sure what they want.",
     parameters: { type: 'object', properties: {}, required: [] },
+  },
+};
+
+const SEND_PRODUCT_LIST_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'send_product_list',
+    description: "Send the customer a tappable WhatsApp list of specific products so they can pick one. When they tap a product, its photos, name and full details are sent automatically. Use when you want to offer a few relevant products to choose from. Use product ids from the catalog section.",
+    parameters: {
+      type: 'object',
+      properties: {
+        product_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Catalog product ids to offer as a tappable list.',
+        },
+      },
+      required: ['product_ids'],
+    },
   },
 };
 
@@ -366,9 +418,15 @@ const SEND_CUSTOM_MESSAGE_TOOL: OpenAI.Chat.ChatCompletionTool = {
   },
 };
 
-/** Build a WhatsApp list from the inventory categories, with their images. */
+/** Build a WhatsApp list from the inventory categories, with their images.
+ *  Row ids use the `cmopt:category:<id>` scheme so a tap drills deterministically
+ *  into that category's products (handled by handleCustomOptionPick — no LLM call). */
 function buildCategoryList(categories: AgentCategory[]): AgentListOut | undefined {
-  const rows = categories.slice(0, 10).map(c => ({ id: `category:${c.name}`, title: c.name.slice(0, 24) }));
+  const rows = categories.slice(0, 10).map(c => ({
+    id: `cmopt:category:${c.id}`,
+    title: c.name.slice(0, 24),
+    description: c.description?.slice(0, 72) || undefined,
+  }));
   if (rows.length === 0) return undefined;
   // Category images are sent as photos before the list (caption = category name).
   const media: AgentMediaOut[] = categories
@@ -388,23 +446,58 @@ function buildCategoryList(categories: AgentCategory[]): AgentListOut | undefine
   };
 }
 
+/** Build a tappable WhatsApp list of specific products. Row ids use the
+ *  `cmopt:product:<id>` scheme, so tapping a product sends its images + name +
+ *  full details (handled by handleCustomOptionPick — no LLM call). */
+function buildProductList(products: ProductRow[], ids: string[]): AgentListOut | undefined {
+  const byId = new Map(products.map(p => [p.id, p]));
+  const rows = ids
+    .map(id => byId.get(id))
+    .filter((p): p is ProductRow => !!p)
+    .slice(0, 10)
+    .map(p => ({
+      id: `cmopt:product:${p.id}`,
+      title: p.name.slice(0, 24),
+      description: p.priceRange ?? undefined,
+    }));
+  if (rows.length === 0) return undefined;
+  return {
+    body: 'Here are some options — tap one to see its photos and details 👇',
+    button: 'View products',
+    sections: [{ title: 'Products', rows }],
+  };
+}
+
 // ── Main entry point ─────────────────────────────────────────────────────────
 
 export async function runAgent(
   userMessage: string,
   history: AgentMessage[] = [],
+  opts: { focusProductId?: string } = {},
 ): Promise<AgentResult> {
-  if (!isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
+  const { focusProductId } = opts;
+  if (!focusProductId && !isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
 
   const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts, customMessages, customMessagesContext } =
-    await getContextData(userMessage);
+    await getContextData(userMessage, focusProductId);
+
+  // A product tap arrives with no typed text — turn it into an instruction so the
+  // AI presents the product conversationally (warm description + a follow-up question).
+  let effectiveMessage = userMessage;
+  if (focusProductId) {
+    const fp = products.find(p => p.id === focusProductId);
+    const nm = fp?.name ?? 'this product';
+    if (!userMessage?.trim()) {
+      effectiveMessage = `The customer just tapped to see "${nm}". Send its photos and tell them about it warmly and naturally, then ask a friendly follow-up question (offer to show other options, give a recommendation, or help them place the order).`;
+    }
+  }
 
   const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, customMessagesContext, settingsPrompt, categories);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     ...history.map(m => ({ role: m.role, content: m.content })),
-    { role: 'user', content: userMessage },
+    { role: 'user', content: effectiveMessage },
   ];
 
   try {
@@ -413,7 +506,7 @@ export async function runAgent(
       messages,
       max_tokens:  400,
       temperature: 0.85,
-      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL, SEND_TEMPLATE_DRAFT_TOOL, SEND_CUSTOM_MESSAGE_TOOL],
+      tools:       [SEND_MEDIA_TOOL, SEND_LIST_TOOL, SEND_PRODUCT_LIST_TOOL, SEND_TEMPLATE_DRAFT_TOOL, SEND_CUSTOM_MESSAGE_TOOL],
       tool_choice: 'auto',
     });
 
@@ -422,12 +515,20 @@ export async function runAgent(
 
     // Gather product ids, a list request, a template draft, and a custom message to send.
     const ids: string[] = [];
+    const listProductIds: string[] = [];
     let wantsList = false;
     let draftId: string | undefined;
     let customId: string | undefined;
     for (const tc of choice?.tool_calls ?? []) {
       if (tc.type !== 'function') continue;
       if (tc.function.name === 'send_category_list') { wantsList = true; continue; }
+      if (tc.function.name === 'send_product_list') {
+        try {
+          const args = JSON.parse(tc.function.arguments || '{}');
+          if (Array.isArray(args.product_ids)) listProductIds.push(...args.product_ids.map(String));
+        } catch { /* ignore malformed args */ }
+        continue;
+      }
       if (tc.function.name === 'send_template_draft') {
         try { draftId = String(JSON.parse(tc.function.arguments || '{}').draft_id || ''); } catch { /* ignore */ }
         continue;
@@ -442,8 +543,13 @@ export async function runAgent(
         if (Array.isArray(args.product_ids)) ids.push(...args.product_ids.map(String));
       } catch { /* ignore malformed args */ }
     }
+    // Always include the tapped product's photos, even if the model forgot the tool.
+    if (focusProductId && !ids.includes(focusProductId)) ids.unshift(focusProductId);
     const media = collectMedia(products, ids);
-    const list  = wantsList ? buildCategoryList(categories) : undefined;
+    // A specific product list wins over a category list when the model asks for both.
+    const list  = listProductIds.length
+      ? buildProductList(products, listProductIds)
+      : (wantsList ? buildCategoryList(categories) : undefined);
 
     let template: AgentTemplateOut | undefined;
     if (draftId) {

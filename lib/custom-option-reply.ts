@@ -25,15 +25,12 @@ async function persist(opts: {
   }).onConflictDoNothing();
 }
 
-/** Format a product into a details caption/message. */
-function productDetails(p: { name: string; priceRange: string | null; fabric: string | null; occasions: string | null; description: string | null }): string {
-  return [
-    `*${p.name}*`,
-    p.priceRange ? `💰 ${p.priceRange}` : '',
-    p.fabric ? `🧵 ${p.fabric}` : '',
-    p.occasions ? `✨ For: ${p.occasions}` : '',
-    p.description || '',
-  ].filter(Boolean).join('\n');
+/** Caption sent with a product's photos: title + product description only.
+ *  The per-image descriptions are internal AI notes and are never sent. */
+function productDetails(p: { name: string; description: string | null }): string {
+  return [`*${p.name}*`, p.description?.trim() || '']
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
