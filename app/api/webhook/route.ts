@@ -13,6 +13,7 @@ import { handleCustomOptionPick } from '@/lib/custom-option-reply';
 import { configToSendPayload } from '@/lib/templates';
 import { getSendUrl } from '@/lib/inventory-media';
 import { advanceRunOnButton } from '@/lib/flow-store';
+import { notifyIncomingMessage } from '@/lib/email-notify';
 
 export const maxDuration = 60;
 
@@ -318,6 +319,17 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     sentBy:        null,   // incoming — always null
     sentAt:        new Date(parseInt(msg.timestamp) * 1000),
   }).onConflictDoNothing();
+
+  // ── Email notification — fire for every inbound message (any number) ──────
+  // Awaited (not fire-and-forget): on Vercel the lambda is frozen the moment the
+  // webhook responds, so a detached promise would never run. Best-effort — it
+  // never throws, so it can't block the agent reply or payment flow below.
+  await notifyIncomingMessage({
+    fromPhone,
+    contactName,
+    text: msgText,
+    msgType: msg.type,
+  });
 
   // ── Cart / order received → capture it and send the payment option ────────
   if (msg.type === 'order') {

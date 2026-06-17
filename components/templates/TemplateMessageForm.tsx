@@ -23,6 +23,8 @@ export default function TemplateMessageForm({ templates, initial, onClose, onSav
   const [name, setName]                 = useState(initial?.name ?? '');
   const [templateName, setTemplateName] = useState(initial?.templateName ?? '');
   const [cfg, setCfg]                   = useState<TemplateMessageConfig>(initial?.config ?? {});
+  const [agentDescription, setAgentDescription] = useState(initial?.agentDescription ?? '');
+  const [whenToSend, setWhenToSend]     = useState(initial?.whenToSend ?? '');
   const [saving, setSaving]             = useState(false);
   const [err, setErr]                   = useState('');
 
@@ -85,6 +87,8 @@ export default function TemplateMessageForm({ templates, initial, onClose, onSav
       language: selected.language || 'en',
       config: cleanCfg,
       preview: renderTemplateMessage(selected, cleanCfg),
+      agentDescription: agentDescription.trim(),
+      whenToSend: whenToSend.trim(),
     };
     const url = initial ? `/api/template-messages/${initial.id}` : '/api/template-messages';
     const res = await fetch(url, {
@@ -118,6 +122,25 @@ export default function TemplateMessageForm({ templates, initial, onClose, onSav
           <div>
             <p className={`${sectionLabel} mb-2`}>Message name</p>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Diwali offer — silk sarees" className={inputCls} />
+          </div>
+
+          {/* Agent guidance — helps Riya pick the right template (names don't match content) */}
+          <div className="rounded-xl border border-purple-300/40 dark:border-purple-400/20 bg-purple-50/60 dark:bg-purple-500/5 p-3 space-y-3">
+            <p className="text-[11px] text-purple-700 dark:text-purple-300/80 leading-relaxed">
+              These help the AI agent know what this template is and when to use it — the template name alone often doesn't say.
+            </p>
+            <div>
+              <label className={labelCls}>Agent description — what is this template?</label>
+              <textarea value={agentDescription} onChange={e => setAgentDescription(e.target.value)} rows={2}
+                placeholder="e.g. Showcase of our Cotton Sarees — product list with prices for the Cotton category"
+                className={`${inputCls} resize-none`} />
+            </div>
+            <div>
+              <label className={labelCls}>When should the agent send it?</label>
+              <textarea value={whenToSend} onChange={e => setWhenToSend(e.target.value)} rows={2}
+                placeholder="e.g. When the customer picks the Cotton category or asks to see cotton sarees"
+                className={`${inputCls} resize-none`} />
+            </div>
           </div>
 
           {/* Template picker */}

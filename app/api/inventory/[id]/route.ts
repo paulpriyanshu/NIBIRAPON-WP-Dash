@@ -13,7 +13,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, media, isActive, inAgentContext, parentId, variantAttributes,
+      customInfo, media, isActive, inAgentContext, featured, parentId, variantAttributes,
     } = body;
 
     // Toggling agent-context alone doesn't change product content, so keep the
@@ -40,6 +40,7 @@ export async function PATCH(
         ...(variantAttributes !== undefined && { variantAttributes: cleanVariantAttributes(variantAttributes) }),
         ...(isActive          !== undefined && { isActive }),
         ...(inAgentContext    !== undefined && { inAgentContext }),
+        ...(featured          !== undefined && { featured }),
         // Clear embedding so it gets re-synced with updated info
         ...(contentChanged && { embedding: null, syncedAt: null }),
         updatedAt: new Date(),

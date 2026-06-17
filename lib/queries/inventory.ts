@@ -18,6 +18,7 @@ const productColumns = {
   customInfo:        catalogProducts.customInfo,
   isActive:          catalogProducts.isActive,
   inAgentContext:    catalogProducts.inAgentContext,
+  featured:          catalogProducts.featured,
   syncedAt:          catalogProducts.syncedAt,
   createdAt:         catalogProducts.createdAt,
 } as const;

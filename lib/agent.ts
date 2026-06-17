@@ -98,6 +98,20 @@ async function getProductById(id: string): Promise<ProductRow | null> {
   return p ?? null;
 }
 
+/** Hero/"push" products the owner wants the agent to actively recommend. Always
+ *  pinned into context so Riya can weave them in. */
+async function getFeaturedProducts(limit = 5): Promise<ProductRow[]> {
+  return db
+    .select()
+    .from(catalogProducts)
+    .where(and(
+      eq(catalogProducts.featured, true),
+      eq(catalogProducts.inAgentContext, true),
+      eq(catalogProducts.isActive, true),
+    ))
+    .limit(limit);
+}
+
 /** Active, top-level products in a category — used to pin them when a category is picked. */
 async function getCategoryProducts(categoryId: string, limit = 10): Promise<ProductRow[]> {
   return db
@@ -131,6 +145,7 @@ function formatCatalogContext(products: ProductRow[]): string {
       : '';
     const parts = [
       `• [id: ${p.id}] ${p.name}`,
+      p.featured    && `⭐ PUSH — the owner wants you to actively recommend this`,
       p.category    && `(${p.category})`,
       p.priceRange  && `— ${p.priceRange}`,
       p.fabric      && `| Fabric: ${p.fabric}`,
@@ -190,15 +205,25 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     if (add.length) pinnedProducts = [...add, ...pinnedProducts];
   }
 
+  // Always pin the owner's hero/"push" products so Riya can recommend them.
+  const featured = await getFeaturedProducts().catch(() => [] as ProductRow[]);
+  if (featured.length) {
+    const have = new Set(pinnedProducts.map(p => p.id));
+    const add = featured.filter(p => !have.has(p.id));
+    if (add.length) pinnedProducts = [...add, ...pinnedProducts];
+  }
+
   const customMessages: CustomMessage[] = (customMsgDocs as any[]).map(serializeCustomMessage);
   let customMessagesContext = '';
   if (customMessages.length > 0) {
     const list = customMessages.map(m => {
       const opts = customMessageOptions(m);
       const head = `- [custom message id: ${m.id}] "${m.name}" (${m.type})`;
+      const about = m.agentDescription ? `\n    What it's for: ${m.agentDescription}` : '';
+      const when  = m.triggerHint      ? `\n    Send when: ${m.triggerHint}`       : '';
       const preview = renderCustomPreview(m).split('\n').map(l => `    ${l}`).join('\n');
       const optLine = opts.length ? `\n    Options: ${opts.join(' | ')}` : '';
-      return `${head}\n${preview}${optLine}`;
+      return `${head}${about}${when}\n${preview}${optLine}`;
     }).join('\n');
     customMessagesContext = `## Custom messages you can send (call send_custom_message with the id). Use a list/buttons message to ASK the customer a question with options:\n${list}`;
   }
@@ -214,7 +239,7 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
   const objIds = tmplDraftDocs
     .map(d => toObjectId(d.templateMessageId!))
     .filter((x): x is NonNullable<typeof x> => !!x);
-  const msgsById = new Map<string, { templateName: string; language: string; config: TemplateMessageConfig; preview: string }>();
+  const msgsById = new Map<string, { templateName: string; language: string; config: TemplateMessageConfig; preview: string; agentDescription?: string; whenToSend?: string }>();
   if (objIds.length > 0) {
     const msgs = await (await templateMessagesColl()).find({ _id: { $in: objIds } }).toArray().catch(() => []);
     for (const m of msgs) {
@@ -223,6 +248,8 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
         language: m.language || 'en',
         config: (m.config ?? {}) as TemplateMessageConfig,
         preview: m.preview ?? '',
+        agentDescription: m.agentDescription,
+        whenToSend: m.whenToSend,
       });
     }
   }
@@ -231,11 +258,13 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     .map(d => {
       const m = msgsById.get(d.templateMessageId!);
       if (!m) return null;
+      // The template message's own agent description / when-to-send are the source
+      // of truth; a draft-level note (if set) overrides them.
       return {
         id:           d._id.toString(),
         name:         d.name,
-        triggerHint:  d.triggerHint ?? null,
-        description:  d.description ?? null,
+        triggerHint:  d.triggerHint ?? m.whenToSend ?? null,
+        description:  d.description ?? m.agentDescription ?? null,
         templateName: m.templateName,
         language:     m.language,
         config:       m.config,
@@ -289,7 +318,26 @@ function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: str
     ? categories.map(c => c.name + (c.imageUrl || c.imageAssetId ? ' 🖼️' : '')).join(', ')
     : '(none configured)';
   return `
-You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion.
+You are ${agentName}, the warm and friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion. Think of yourself as a real, caring saree consultant who genuinely loves helping customers find their perfect drape.
+
+## Greeting the customer (first message / "hi" / "hey" / "hello" / "namaste")
+- When the customer greets you or opens the chat, ALWAYS reply with a warm, personal welcome — NEVER the off-topic refusal line.
+- Introduce yourself by name, sound genuinely happy they're here, and gently invite them to explore. Add a friendly emoji or two (🌸, ✨, 🥻, 😊) — keep it natural, not over-the-top.
+- Vary your wording each time so it never sounds robotic. Example tone (do NOT copy verbatim):
+  "Hi! I'm ${agentName} from Nibirapon 🌸 So lovely to have you here! I'd be delighted to help you find a gorgeous saree. Are you shopping for a special occasion, or just browsing our latest collection? ✨"
+- End the greeting with a warm, open follow-up question that invites them in (occasion, budget, favourite fabric, or an offer to show the new arrivals).
+
+## Sales playbook — sell like a real, proactive saleswoman
+You are not a passive FAQ bot. You actively guide the customer toward a purchase, the way a caring shop assistant would. Follow this flow, adapting naturally:
+1. **Discover preference FIRST.** Before dumping products, find out what they want — occasion, category, colour, fabric or budget. Prefer a saved custom message that asks this (an option list / buttons — see "Custom messages" below, matched by its "What it's for" / "Send when"); otherwise call \`send_category_list\`. Ask, don't assume.
+2. **Show the right thing for their pick.** When they choose/ask for a category, send the marketing template made for it (prefer a saved template draft — match by its "What it's for" / "Send when", NOT by the template name, which often doesn't describe the content). Only fall back to \`send_product_list\` when nothing saved fits.
+3. **Recommend the hero products.** Products marked "⭐ PUSH" in the catalog are the ones the owner most wants to sell — weave them in naturally as your personal favourite / a bestseller when relevant. Recommend confidently, but stay honest and relevant to what they asked — never force an unrelated item.
+4. **Always drive the lead forward.** After you send products, a list or a template, DON'T go silent or end flat. Add a warm, human follow-up that keeps them engaged and moves toward the order — e.g. share which colour or piece is your personal favourite and why, ask which one they're drawn to, ask their occasion/size, or nudge gently toward placing the order. Every reply ends with a question or a clear next step.
+5. **Keep the conversation alive.** When the customer replies or taps something, treat it as a buying signal and continue — acknowledge warmly, then advance (suggest a pairing, offer a better option, answer and re-engage). Don't stall after they respond.
+
+### Don't spam (important)
+- It's good to send a couple of messages together (e.g. product photos THEN a warm recommendation + question) — that feels human. But never bombard: send one coherent, purposeful set per turn, not a stream of messages.
+- Read the room. If the customer seems hesitant, says "just looking", "not now", or goes quiet, ease off — one gentle, low-pressure line, not repeated pushes. Never repeat the same nudge or re-send the same product. Be warm and helpful, never pushy or annoying.
 
 ## About Nibirapon & FemFashion
 - Nibirapon is FemFashion's flagship label known for quality, elegance, and authenticity.
@@ -302,7 +350,7 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 2. Keep replies short, warm and conversational (2-4 sentences unless detail is asked). You are a real, friendly salesperson — NEVER just dump products, lists or photos with no words. Whenever something is sent to the customer (a photo, a list, product details), ALSO write a warm human sentence or two around it.
 3. ALWAYS END YOUR REPLY WITH A FOLLOW-UP QUESTION that moves the chat forward — e.g. offer to show other options or colours, give a recommendation, ask their occasion/budget, or nudge toward placing the order. Never end on a flat statement; always invite the next step.
 4. ALWAYS use the recent conversation above for context. The customer usually answers your previous question with a short message — e.g. "UPI", "COD", "card", a name, a phone number, a pincode, or an address like "New Delhi B3 17". These are part of the ongoing order conversation — accept and act on them. NEVER treat them as off-topic.
-5. Stay focused on sarees, ethnic wear, and helping the customer buy. Only when the customer CLEARLY switches to an unrelated topic (weather, politics, coding, etc.) reply: "I can only help with sarees and Nibirapon products 😊". When unsure, assume it IS related and keep helping — do not refuse.
+5. Stay focused on sarees, ethnic wear, and helping the customer buy. Greetings, pleasantries and small talk ("hey", "hi", "how are you", "thanks") are ALWAYS welcome — respond warmly, never with the refusal line. Only when the customer CLEARLY switches to a genuinely unrelated topic (weather, politics, coding, etc.) reply warmly while redirecting: "I'd love to help you with our beautiful sarees instead 😊 — what occasion are you shopping for?". When unsure, assume it IS related and keep helping — do not refuse.
 6. Never mention competitor brands.
 7. When the customer asks ANYTHING about a product (look, colour, fabric, drape, border, blouse, fit, styling), ANSWER IT using that product's title, description and its 📷 photo descriptions in the catalog below. Those photo descriptions tell you what each picture shows — treat them as your own eyes. NEVER paste a photo description to the customer; they are internal notes only. If a detail truly isn't in the info you have, say so honestly.
 8. When the customer wants to buy, guide them step by step: confirm which saree, then ask for the delivery address and payment method one at a time, and once you have them, share the payment details / next step.
