@@ -416,6 +416,7 @@ async function handleCartOrder({
   fromPhone: string; bizPhone: string; contactId: string; conversationId: string;
 }) {
   const rawItems = msg.order?.product_items ?? [];
+  console.log(`[order] cart received from ${fromPhone} — ${rawItems.length} item(s)`);
   if (rawItems.length === 0) { console.warn('[order] empty cart — nothing to do'); return; }
 
   const currency    = rawItems[0]?.currency || 'INR';
@@ -444,16 +445,19 @@ async function handleCartOrder({
   const money = (paise: number) => `${currency === 'INR' ? '₹' : currency + ' '}${(paise / 100).toLocaleString('en-IN')}`;
 
   // 1. Capture the order (pending) so it shows in the dashboard / can be paid.
-  await db.insert(orders).values({
-    referenceId,
-    contactId,
-    conversationId,
-    waOrderMsgId:   msg.id,
-    phone:          fromPhone,
-    currency,
-    totalPaise,
-    items,
-  }).onConflictDoNothing();
+  //    Isolated so a DB hiccup never blocks the payment send below.
+  try {
+    await db.insert(orders).values({
+      referenceId,
+      contactId,
+      conversationId,
+      waOrderMsgId:   msg.id,
+      phone:          fromPhone,
+      currency,
+      totalPaise,
+      items,
+    }).onConflictDoNothing();
+  } catch (e) { console.error('[order] failed to record order:', e instanceof Error ? e.message : e); }
 
   const localId = (s: string) => `wamid.order_${s}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -481,7 +485,16 @@ async function handleCartOrder({
     if (waId) await db.update(orders).set({ checkoutMsgId: waId, updatedAt: new Date() }).where(eq(orders.referenceId, referenceId));
     console.log(`[order] captured ref=${referenceId} total=${totalPaise} qty=${totalQty} → checkout waId=${waId ?? 'none'}`);
   } catch (e) {
-    console.error('[order] checkout send failed:', e instanceof Error ? e.message : e);
+    // WhatsApp rejected the order_details message — surface why in the inbox (admin-only,
+    // never delivered) so payment-gateway / catalog / amount issues are debuggable.
+    const reason = e instanceof Error ? e.message : 'send failed';
+    console.error('[order] checkout send failed:', reason);
+    await db.insert(messages).values({
+      id: localId('payfail'), conversationId,
+      fromNumber: bizPhone, toNumber: fromPhone, type: 'interactive',
+      text: `⚠ Payment request not sent — ${reason}`,
+      status: 'failed', isOutgoing: true, sentBy: 'agent', sentAt: new Date(),
+    }).onConflictDoNothing();
   }
 
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conversationId)).catch(() => {});
