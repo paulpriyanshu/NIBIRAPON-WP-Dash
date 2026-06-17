@@ -254,7 +254,11 @@ export async function sendCheckoutTemplate({
   headerImageUrl,
   items,
 }: CheckoutTemplatePayload) {
-  const razorpayConfigName = process.env.RAZORPAY_WHATSAPP_CONFIG || 'textpayment';
+  // The managed Payment configuration name (WhatsApp Manager → Payment configurations).
+  // Guard against the env being set to the literal var name (a common copy-paste slip)
+  // or left blank — both fall back to the actual config "textpayment".
+  const rawCfg = process.env.RAZORPAY_WHATSAPP_CONFIG;
+  const razorpayConfigName = rawCfg && rawCfg !== 'RAZORPAY_WHATSAPP_CONFIG' ? rawCfg : 'textpayment';
   const catalogId          = process.env.WHATSAPP_CATALOG_ID;
 
   const orderItems = items.map((item) => {
@@ -278,14 +282,21 @@ export async function sendCheckoutTemplate({
     return base;
   });
 
-  // Meta's MANAGED payment configuration (WhatsApp Manager → Payment configurations).
-  // The order_details message references the configuration by name + the p2m gateway,
-  // not the older inline self-integration `payment_settings` block.
+  // References the managed Razorpay config by name (WhatsApp Manager → Payment
+  // configurations). The earlier #131009 was caused by a bad configuration_name
+  // value, not this structure.
   const parameters: Record<string, any> = {
     reference_id: referenceId,
     type:         'physical-goods',
-    payment_type: 'p2m-lite:razorpay',
-    payment_configuration: razorpayConfigName,
+    payment_settings: [
+      {
+        type: 'payment_gateway',
+        payment_gateway: {
+          type:               'razorpay',
+          configuration_name: razorpayConfigName,
+        },
+      },
+    ],
     currency,
     total_amount: { value: totalAmountInPaise, offset: 100 },
     order: {
