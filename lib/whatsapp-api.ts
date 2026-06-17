@@ -48,7 +48,12 @@ async function graphRequest(method: string, endpoint: string, body?: object) {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.error?.message || `WhatsApp API error: ${res.status}`);
+    const e = data.error || {};
+    // error_data.details carries the specific reason (e.g. why an order_details
+    // / payment message was rejected) — surface it so failures are debuggable.
+    const detail = e.error_data?.details ? ` — ${e.error_data.details}` : '';
+    const code   = e.code ? ` (code ${e.code})` : '';
+    throw new Error(`${e.message || `WhatsApp API error: ${res.status}`}${detail}${code}`);
   }
   return data;
 }
@@ -249,51 +254,39 @@ export async function sendCheckoutTemplate({
   headerImageUrl,
   items,
 }: CheckoutTemplatePayload) {
-  const razorpayConfigName = process.env.RAZORPAY_WHATSAPP_CONFIG || 'textpayment';
-  const catalogId          = process.env.WHATSAPP_CATALOG_ID;
+  // Managed Payment configuration name (WhatsApp Manager → Payment configurations).
+  // Guard against the env being set to the literal var name (a common copy-paste slip)
+  // or left blank — both fall back to the actual config "textpayment".
+  const rawCfg = process.env.RAZORPAY_WHATSAPP_CONFIG;
+  const paymentConfig = rawCfg && rawCfg !== 'RAZORPAY_WHATSAPP_CONFIG' ? rawCfg : 'textpayment';
+  // Payment method/rail per the WhatsApp IN Payments "Send Order Details" sample
+  // (e.g. "upi"). Overridable in case the gateway expects a different value.
+  const paymentType = process.env.WHATSAPP_PAYMENT_TYPE || 'upi';
 
-  const orderItems = items.map((item) => {
-    const base: Record<string, any> = {
-      retailer_id: item.retailerId,
-      name:        item.name,
-      amount:      { value: item.priceInPaise, offset: 100 },
-      quantity:    item.quantity,
-    };
-    if (!catalogId) {
-      base.country_of_origin = 'India';
-      base.importer_name     = 'Fem Fashion';
-      base.importer_address  = {
-        address_line1: 'B-3/17 Sector 17 Rohini',
-        city:          'New Delhi',
-        state:         'Delhi',
-        country:       'India',
-        postal_code:   '110089',
-      };
-    }
-    return base;
-  });
+  // Self-described (ad-hoc) line items — matches the IN Payments sample: no
+  // catalog_id, no importer block. amount is the per-unit price in paise.
+  const orderItems = items.map((item) => ({
+    retailer_id: item.retailerId,
+    name:        item.name,
+    amount:      { value: item.priceInPaise, offset: 100 },
+    quantity:    item.quantity,
+  }));
 
+  // India Payments order_details: payment_type + payment_configuration reference
+  // the managed Razorpay config. (The older payment_settings/payment_gateway block
+  // is NOT used here and was the source of the earlier #131009.)
   const parameters: Record<string, any> = {
-    reference_id: referenceId,
-    type:         'physical-goods',
-    payment_settings: [
-      {
-        type: 'payment_gateway',
-        payment_gateway: {
-          type:               'razorpay',
-          configuration_name: razorpayConfigName,
-        },
-      },
-    ],
+    reference_id:          referenceId,
+    type:                  'physical-goods',
+    payment_type:          paymentType,
+    payment_configuration: paymentConfig,
     currency,
     total_amount: { value: totalAmountInPaise, offset: 100 },
     order: {
       status:   'pending',
-      ...(catalogId ? { catalog_id: catalogId } : {}),
       items:    orderItems,
       subtotal: { value: totalAmountInPaise, offset: 100 },
       tax:      { value: 0, offset: 100 },
-      shipping: { value: 0, offset: 100 },
     },
   };
 
