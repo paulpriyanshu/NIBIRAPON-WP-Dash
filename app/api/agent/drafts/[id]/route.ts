@@ -10,11 +10,12 @@ export async function PATCH(
     const _id = toObjectId(id);
     if (!_id) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
-    const { name, content, triggerHint, isActive, templateMessageId } = await req.json();
+    const { name, content, triggerHint, description, isActive, templateMessageId } = await req.json();
     const set: Record<string, unknown> = { updatedAt: new Date() };
     if (name              !== undefined) set.name = name;
     if (content           !== undefined) set.content = content;
     if (triggerHint       !== undefined) set.triggerHint = triggerHint;
+    if (description       !== undefined) set.description = description;
     if (isActive          !== undefined) set.isActive = isActive;
     if (templateMessageId !== undefined) set.templateMessageId = templateMessageId;
 

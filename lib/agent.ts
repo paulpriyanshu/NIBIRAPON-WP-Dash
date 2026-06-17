@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
 import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
-import { eq, and, isNotNull, asc } from 'drizzle-orm';
+import { eq, and, isNull, isNotNull, asc } from 'drizzle-orm';
 import { agentDraftsColl, templateMessagesColl, toObjectId } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
@@ -35,6 +35,7 @@ interface ResolvedTemplateDraft {
   id: string;
   name: string;
   triggerHint: string | null;
+  description: string | null;
   templateName: string;
   language: string;
   config: TemplateMessageConfig;
@@ -97,6 +98,29 @@ async function getProductById(id: string): Promise<ProductRow | null> {
   return p ?? null;
 }
 
+/** Active, top-level products in a category — used to pin them when a category is picked. */
+async function getCategoryProducts(categoryId: string, limit = 10): Promise<ProductRow[]> {
+  return db
+    .select()
+    .from(catalogProducts)
+    .where(and(
+      eq(catalogProducts.categoryId, categoryId),
+      eq(catalogProducts.isActive, true),
+      isNull(catalogProducts.parentId),
+    ))
+    .limit(limit);
+}
+
+/** A category's display name by id. */
+async function getCategoryName(categoryId: string): Promise<string | null> {
+  const [c] = await db
+    .select({ name: categoriesTable.name })
+    .from(categoriesTable)
+    .where(eq(categoriesTable.id, categoryId))
+    .limit(1);
+  return c?.name ?? null;
+}
+
 /** Render the relevant products into a catalog block for the system prompt. */
 function formatCatalogContext(products: ProductRow[]): string {
   if (products.length === 0) return '';
@@ -122,7 +146,7 @@ function formatCatalogContext(products: ProductRow[]): string {
 
 // ── Fetch agent settings + drafts ────────────────────────────────────────────
 
-async function getContextData(userMessage: string, focusProductId?: string): Promise<{
+async function getContextData(userMessage: string, focusProductId?: string, focusCategoryId?: string): Promise<{
   settingsPrompt: string;
   agentName: string;
   products: ProductRow[];
@@ -152,12 +176,18 @@ async function getContextData(userMessage: string, focusProductId?: string): Pro
     customMessagesColl().then(c => c.find({ isActive: true }).sort({ updatedAt: -1 }).toArray()).catch(() => []),
   ]);
 
-  // Pin the product the customer is asking about (e.g. tapped from a list) so it's
-  // always in context, even if semantic search didn't surface it.
+  // Pin the product/category the customer is asking about (e.g. tapped from a list)
+  // so it's always in context, even if semantic search didn't surface it.
   let pinnedProducts = products;
   if (focusProductId && !products.some(p => p.id === focusProductId)) {
     const focused = await getProductById(focusProductId);
     if (focused) pinnedProducts = [focused, ...products];
+  }
+  if (focusCategoryId) {
+    const catProducts = await getCategoryProducts(focusCategoryId);
+    const have = new Set(pinnedProducts.map(p => p.id));
+    const add = catProducts.filter(p => !have.has(p.id));
+    if (add.length) pinnedProducts = [...add, ...pinnedProducts];
   }
 
   const customMessages: CustomMessage[] = (customMsgDocs as any[]).map(serializeCustomMessage);
@@ -205,6 +235,7 @@ async function getContextData(userMessage: string, focusProductId?: string): Pro
         id:           d._id.toString(),
         name:         d.name,
         triggerHint:  d.triggerHint ?? null,
+        description:  d.description ?? null,
         templateName: m.templateName,
         language:     m.language,
         config:       m.config,
@@ -225,11 +256,13 @@ async function getContextData(userMessage: string, focusProductId?: string): Pro
   if (templateDrafts.length > 0) {
     const list = templateDrafts
       .map(d => {
-        const head = `- [template draft id: ${d.id}] "${d.name}" — sends the "${d.templateName}" template. Send when: ${d.triggerHint || 'it fits the situation'}.`;
+        const head = `- [template draft id: ${d.id}] "${d.name}" — sends the "${d.templateName}" template.`;
+        const about = d.description ? `\n  What it's for: ${d.description}` : '';
+        const when  = `\n  Send when: ${d.triggerHint || 'it fits the situation'}.`;
         const body = d.preview
           ? `\n  This template contains:\n${d.preview.split('\n').map(l => `    ${l}`).join('\n')}`
           : '';
-        return head + body;
+        return head + about + when + body;
       })
       .join('\n');
     templateDraftsContext = `## Templates you can send (call send_template_draft with the id). You may also answer customer questions about what a template contains, using the contents shown below:\n${list}`;
@@ -281,20 +314,25 @@ You are ${agentName}, the friendly AI sales assistant for Nibirapon — a premiu
 - When the customer is interested in, asks about, or would benefit from seeing specific product(s) listed in the catalog below, ALSO call the \`send_product_media\` tool with those products' ids. Their photos/videos are sent automatically, captioned with the product title + description — so you don't repeat the title/description verbatim; instead add a friendly human touch and a question.
 - Only use ids that appear in the catalog section. Never invent ids. If no product is relevant, just reply with text and don't call the tool.
 
+## PREFER YOUR SAVED CONTENT (important)
+- Before building your own list or writing your own options message, ALWAYS look at the "Templates" and "Custom messages" sections below. If a saved template draft or custom message fits the situation, SEND THAT (call \`send_template_draft\` / \`send_custom_message\`) instead of composing your own. These are hand-crafted by the team and look better.
+- Match by the template's "What it's for" / "Send when" notes and the custom message's purpose. Especially: when the customer picks/asks for a CATEGORY, prefer the marketing template made for that category's products. Only fall back to \`send_product_list\` (your own list) when no saved template or custom message fits that category.
+- Only invent your own list/message when nothing pre-made fits or you genuinely need options that don't exist yet.
+
 ## Sending a category list
-- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. The categories that have an image (marked 🖼️ below) are sent as photos first, then a tappable WhatsApp list so they can pick one. When they tap a category, its products are shown automatically as another tappable list — you don't need to do anything.
+- When the customer wants to browse, asks "what do you have", asks to see categories, or is unsure what they want, call the \`send_category_list\` tool. The categories that have an image (marked 🖼️ below) are sent as photos first, then a tappable WhatsApp list so they can pick one. When they tap a category, you'll be asked to present that category — first try a matching saved marketing template / custom message, otherwise send its product list.
 - Lean on these category visuals when helping a customer browse — they make your messages richer.
 - Available categories: ${categoryLine}.
 
 ## Sending a product list
-- When you want to offer a few specific products for the customer to choose between (e.g. they asked for "red silk sarees" and several fit), call the \`send_product_list\` tool with those products' ids. The customer gets a tappable list; when they tap a product, its photos, name and full details are sent automatically.
+- When you want to offer a few specific products for the customer to choose between (e.g. they asked for "red silk sarees" and several fit) AND no saved template/custom message fits, call the \`send_product_list\` tool with those products' ids. The customer gets a tappable list; when they tap a product, its photos, name and full details are sent automatically.
 - Prefer \`send_product_list\` (a tappable picker) when offering several products to choose from; use \`send_product_media\` when you just want to show one or two products' photos directly. Only use ids from the catalog section.
 
 ## Sending a saved template
-- When the situation matches a template's "Send when" note below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short text reply too. Only use ids listed below.
+- When the situation matches a template's "What it's for" / "Send when" notes below, call \`send_template_draft\` with that template draft's id. The full template is sent to the customer. Still write a short warm text reply too. Only use ids listed below.
 
 ## Sending a custom message
-- When a saved custom message below fits — especially an options list or buttons to ask the customer to choose (e.g. a category, a size, yes/no) — call \`send_custom_message\` with its id. Still write a short text reply too. Only use ids listed below; never invent them.
+- When a saved custom message below fits — especially an options list or buttons to ask the customer to choose (e.g. a category, a size, yes/no) — call \`send_custom_message\` with its id. Still write a short warm text reply too. Only use ids listed below; never invent them.
 
 ${catalogCtx ? catalogCtx + '\n' : ''}
 ${draftsCtx  ? draftsCtx  + '\n' : ''}
@@ -473,23 +511,24 @@ function buildProductList(products: ProductRow[], ids: string[]): AgentListOut |
 export async function runAgent(
   userMessage: string,
   history: AgentMessage[] = [],
-  opts: { focusProductId?: string } = {},
+  opts: { focusProductId?: string; focusCategoryId?: string } = {},
 ): Promise<AgentResult> {
-  const { focusProductId } = opts;
-  if (!focusProductId && !isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
+  const { focusProductId, focusCategoryId } = opts;
+  if (!focusProductId && !focusCategoryId && !isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
 
   const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts, customMessages, customMessagesContext } =
-    await getContextData(userMessage, focusProductId);
+    await getContextData(userMessage, focusProductId, focusCategoryId);
 
-  // A product tap arrives with no typed text — turn it into an instruction so the
-  // AI presents the product conversationally (warm description + a follow-up question).
+  // A product / category tap arrives with no typed text — turn it into an instruction
+  // so the AI responds conversationally (and prefers pre-made content where it fits).
   let effectiveMessage = userMessage;
-  if (focusProductId) {
+  if (focusProductId && !userMessage?.trim()) {
     const fp = products.find(p => p.id === focusProductId);
     const nm = fp?.name ?? 'this product';
-    if (!userMessage?.trim()) {
-      effectiveMessage = `The customer just tapped to see "${nm}". Send its photos and tell them about it warmly and naturally, then ask a friendly follow-up question (offer to show other options, give a recommendation, or help them place the order).`;
-    }
+    effectiveMessage = `The customer just tapped to see "${nm}". Send its photos and tell them about it warmly and naturally, then ask a friendly follow-up question (offer to show other options, give a recommendation, or help them place the order).`;
+  } else if (focusCategoryId && !userMessage?.trim()) {
+    const catName = await getCategoryName(focusCategoryId);
+    effectiveMessage = `The customer chose the "${catName ?? 'selected'}" category. FIRST check the Templates and Custom messages sections: if a marketing template or custom message is meant for this category, SEND THAT (prefer it over making your own). Otherwise show this category's products with send_product_list. Always add a warm intro line and end with a follow-up question.`;
   }
 
   const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, customMessagesContext, settingsPrompt, categories);
@@ -547,7 +586,7 @@ export async function runAgent(
     if (focusProductId && !ids.includes(focusProductId)) ids.unshift(focusProductId);
     const media = collectMedia(products, ids);
     // A specific product list wins over a category list when the model asks for both.
-    const list  = listProductIds.length
+    let list  = listProductIds.length
       ? buildProductList(products, listProductIds)
       : (wantsList ? buildCategoryList(categories) : undefined);
 
@@ -560,6 +599,13 @@ export async function runAgent(
     }
 
     const customMessage = customId ? customMessages.find(x => x.id === customId) : undefined;
+
+    // Category tap fallback: if the AI sent no template/custom message/list/media,
+    // still show that category's products so the customer isn't left empty-handed.
+    if (focusCategoryId && !list && !template && !customMessage && media.length === 0) {
+      const catIds = products.filter(p => p.categoryId === focusCategoryId).map(p => p.id);
+      list = buildProductList(products, catIds);
+    }
 
     return { reply, media, list, template, customMessage, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template || !!customMessage };
   } catch (err) {

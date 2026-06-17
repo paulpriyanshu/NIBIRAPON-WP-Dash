@@ -28,7 +28,7 @@ interface Product {
 
 interface Draft {
   id: string; name: string; kind?: 'text' | 'template'; content: string;
-  triggerHint: string | null; isActive: boolean;
+  triggerHint: string | null; description?: string | null; isActive: boolean;
   templateMessageId?: string | null;
 }
 
@@ -385,7 +385,7 @@ function DraftForm({
 const draftInput = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-purple-400/50 transition-colors';
 
 interface TemplateDraftData {
-  name: string; triggerHint: string; templateMessageId: string;
+  name: string; triggerHint: string; description: string; templateMessageId: string;
 }
 
 function TemplateDraftForm({ messages, initial, onSave, onCancel, loading }: {
@@ -397,6 +397,7 @@ function TemplateDraftForm({ messages, initial, onSave, onCancel, loading }: {
 }) {
   const [name, setName]                       = useState(initial?.name ?? '');
   const [triggerHint, setTriggerHint]         = useState(initial?.triggerHint ?? '');
+  const [description, setDescription]         = useState(initial?.description ?? '');
   const [templateMessageId, setTemplateMessageId] = useState(initial?.templateMessageId ?? '');
   const [err, setErr] = useState('');
 
@@ -406,7 +407,7 @@ function TemplateDraftForm({ messages, initial, onSave, onCancel, loading }: {
     if (!name.trim()) { setErr('Name is required'); return; }
     if (!templateMessageId) { setErr('Pick a saved message'); return; }
     setErr('');
-    await onSave({ name: name.trim(), triggerHint, templateMessageId });
+    await onSave({ name: name.trim(), triggerHint, description, templateMessageId });
   };
 
   return (
@@ -438,9 +439,15 @@ function TemplateDraftForm({ messages, initial, onSave, onCancel, loading }: {
       )}
 
       <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">What is this template for? (helps the agent identify it)</label>
+        <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+          placeholder="e.g. Marketing showcase of our Cotton Sarees collection — product list with prices for the Cotton category"
+          className={`${draftInput} resize-none leading-relaxed`} />
+      </div>
+      <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">When to send / instructions for the agent</label>
         <textarea value={triggerHint} onChange={e => setTriggerHint(e.target.value)} rows={2}
-          placeholder="e.g. Send when the customer asks about the Diwali offer or wants the latest collection"
+          placeholder="e.g. Send when the customer picks the Cotton category or asks to see cotton sarees"
           className={`${draftInput} resize-none leading-relaxed`} />
       </div>
 
@@ -538,7 +545,7 @@ function DraftsTab() {
               ) : editId === d.id && isTemplate ? (
                 <div className="p-3">
                   <TemplateDraftForm messages={messages}
-                    initial={{ name: d.name, triggerHint: d.triggerHint ?? '', templateMessageId: d.templateMessageId ?? '' }}
+                    initial={{ name: d.name, triggerHint: d.triggerHint ?? '', description: d.description ?? '', templateMessageId: d.templateMessageId ?? '' }}
                     onSave={data => update(d.id, { ...data, kind: 'template' })} onCancel={() => setEditId(null)} loading={saving} />
                 </div>
               ) : (
@@ -551,6 +558,9 @@ function DraftsTab() {
                           ? <span className="text-[9px] bg-purple-500/15 text-purple-300 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><Layers size={8} /> Template</span>
                           : <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full">Text</span>}
                       </div>
+                      {d.description && (
+                        <p className="text-white/50 text-[11px] mt-1 leading-relaxed">{d.description}</p>
+                      )}
                       {d.triggerHint && (
                         <p className="text-purple-400/70 text-[10px] mt-0.5 flex items-center gap-1">
                           <Tag size={9} /> {d.triggerHint}

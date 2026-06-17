@@ -3,10 +3,10 @@ import { db } from '@/db';
 import {
   contacts, conversations, messages, messageStatusLog,
   webhookEvents, leads, messageReactions,
-  broadcastRecipients, broadcastCampaigns,
+  broadcastRecipients, broadcastCampaigns, orders,
 } from '@/db/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
-import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage, sendRichTemplateMessage, sendMPMTemplateMessage } from '@/lib/whatsapp-api';
+import { verifyWebhook, sendTextMessage, sendMediaMessage, sendListMessage, sendRichTemplateMessage, sendMPMTemplateMessage, sendCheckoutTemplate, getProductFromCatalog } from '@/lib/whatsapp-api';
 import { runAgent, type AgentMessage } from '@/lib/agent';
 import { sendCustomMessage } from '@/lib/custom-message-send';
 import { handleCustomOptionPick } from '@/lib/custom-option-reply';
@@ -319,6 +319,14 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     sentAt:        new Date(parseInt(msg.timestamp) * 1000),
   }).onConflictDoNothing();
 
+  // ── Cart / order received → capture it and send the payment option ────────
+  if (msg.type === 'order') {
+    await handleCartOrder({
+      msg, fromPhone, bizPhone: phoneNumberId, contactId, conversationId,
+    }).catch(err => console.error('[order]', err));
+    return; // order handled — don't run the agent on this message
+  }
+
   // ── AI agent reply ────────────────────────────────────────────────────────
   // MUST be awaited before returning — Vercel kills the lambda the moment
   // the response is sent, so fire-and-forget never executes the OpenAI call.
@@ -357,13 +365,16 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   if (!flowAdvanced && isButtonTap && templateData?.buttonId?.startsWith('cmopt:')) {
     const bid = templateData.buttonId;
     const prodTap = /^cmopt:product:(.+)$/.exec(bid);
-    // Product tap → let the AI present it conversationally (warm text + photos +
-    // a follow-up question) instead of a cold data dump. Category tap (or agent off)
-    // → deterministic drill-down into that category's products.
-    if (prodTap && conv?.agentEnabled) {
+    const catTap  = /^cmopt:category:(.+)$/.exec(bid);
+    // Let the AI handle taps conversationally (warm text + a follow-up question),
+    // preferring saved templates / custom messages. Product tap → present the item;
+    // category tap → send its marketing template / custom message, else a product list.
+    // Falls back to the deterministic drill-down when the agent is off.
+    if ((prodTap || catTap) && conv?.agentEnabled) {
       await agentReply({
-        conversationId, toPhone: fromPhone, bizPhone: phoneNumberId,
-        userText: '', focusProductId: prodTap[1],
+        conversationId, toPhone: fromPhone, bizPhone: phoneNumberId, userText: '',
+        focusProductId:  prodTap?.[1],
+        focusCategoryId: catTap?.[1],
       }).catch(err => console.error('[agent-reply]', err));
       return;
     }
@@ -390,6 +401,105 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   }
 }
 
+/** One line item in a WhatsApp cart/order webhook payload. */
+interface OrderItem { product_retailer_id?: string; quantity?: number; item_price?: number; currency?: string }
+
+/**
+ * A WhatsApp cart/order arrived → record it as a pending order (amount, qty,
+ * product name + pic per item) and send the customer the payment option:
+ * a short summary followed by the "Review and Pay" interactive.
+ */
+async function handleCartOrder({
+  msg, fromPhone, bizPhone, contactId, conversationId,
+}: {
+  msg: { id: string; order?: { product_items?: OrderItem[]; catalog_id?: string } };
+  fromPhone: string; bizPhone: string; contactId: string; conversationId: string;
+}) {
+  const rawItems = msg.order?.product_items ?? [];
+  console.log(`[order] cart received from ${fromPhone} — ${rawItems.length} item(s)`);
+  if (rawItems.length === 0) { console.warn('[order] empty cart — nothing to do'); return; }
+
+  const currency    = rawItems[0]?.currency || 'INR';
+  const catalogId   = String(msg.order?.catalog_id || process.env.WHATSAPP_CATALOG_ID || '');
+  const referenceId = `nbr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  // Resolve each item's name + image from the WhatsApp catalog (best effort).
+  const catalogInfo = await Promise.all(rawItems.map(async (i) => {
+    if (!catalogId) return null;
+    try {
+      const res = await getProductFromCatalog(catalogId, String(i.product_retailer_id));
+      return (res?.data?.[0] ?? null) as { name?: string; image_url?: string } | null;
+    } catch { return null; }
+  }));
+
+  const items = rawItems.map((i, idx) => ({
+    retailerId:   String(i.product_retailer_id || 'product'),
+    name:         catalogInfo[idx]?.name || String(i.product_retailer_id || 'Product'),
+    imageUrl:     catalogInfo[idx]?.image_url || undefined,
+    priceInPaise: Math.round(Number(i.item_price || 0) * 100),  // WA sends major units
+    quantity:     Number(i.quantity) || 1,
+  }));
+  const totalPaise = items.reduce((sum, it) => sum + it.priceInPaise * it.quantity, 0);
+  const totalQty   = items.reduce((sum, it) => sum + it.quantity, 0);
+  const headerImageUrl = items.find(it => it.imageUrl)?.imageUrl;
+  const money = (paise: number) => `${currency === 'INR' ? '₹' : currency + ' '}${(paise / 100).toLocaleString('en-IN')}`;
+
+  // 1. Capture the order (pending) so it shows in the dashboard / can be paid.
+  //    Isolated so a DB hiccup never blocks the payment send below.
+  try {
+    await db.insert(orders).values({
+      referenceId,
+      contactId,
+      conversationId,
+      waOrderMsgId:   msg.id,
+      phone:          fromPhone,
+      currency,
+      totalPaise,
+      items,
+    }).onConflictDoNothing();
+  } catch (e) { console.error('[order] failed to record order:', e instanceof Error ? e.message : e); }
+
+  const localId = (s: string) => `wamid.order_${s}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  // 2. Warm confirmation summarising products, qty and amount.
+  const summary = `🛒 Thanks for your order!\n\n${items.map(it => `• ${it.name} × ${it.quantity} — ${money(it.priceInPaise * it.quantity)}`).join('\n')}\n\n*Total: ${money(totalPaise)}* (${totalQty} item${totalQty !== 1 ? 's' : ''})\n\nTap below to pay securely 👇`;
+  try {
+    const txt = await sendTextMessage({ to: fromPhone, text: summary });
+    await db.insert(messages).values({
+      id: txt?.messages?.[0]?.id || localId('sum'), conversationId,
+      fromNumber: bizPhone, toNumber: fromPhone, type: 'text', text: summary,
+      status: txt?.messages?.[0]?.id ? 'sent' : 'failed', isOutgoing: true, sentBy: 'agent', sentAt: new Date(),
+    }).onConflictDoNothing();
+  } catch (e) { console.error('[order] summary send failed:', e instanceof Error ? e.message : e); }
+
+  // 3. The payment option — WhatsApp "Review and Pay" (order_details interactive).
+  try {
+    const res  = await sendCheckoutTemplate({ to: fromPhone, referenceId, currency, totalAmountInPaise: totalPaise, headerImageUrl, items });
+    const waId = res?.messages?.[0]?.id;
+    await db.insert(messages).values({
+      id: waId || localId('pay'), conversationId,
+      fromNumber: bizPhone, toNumber: fromPhone, type: 'interactive',
+      text: `💳 Payment request — ${money(totalPaise)}`,
+      status: waId ? 'sent' : 'failed', isOutgoing: true, sentBy: 'agent', sentAt: new Date(),
+    }).onConflictDoNothing();
+    if (waId) await db.update(orders).set({ checkoutMsgId: waId, updatedAt: new Date() }).where(eq(orders.referenceId, referenceId));
+    console.log(`[order] captured ref=${referenceId} total=${totalPaise} qty=${totalQty} → checkout waId=${waId ?? 'none'}`);
+  } catch (e) {
+    // WhatsApp rejected the order_details message — surface why in the inbox (admin-only,
+    // never delivered) so payment-gateway / catalog / amount issues are debuggable.
+    const reason = e instanceof Error ? e.message : 'send failed';
+    console.error('[order] checkout send failed:', reason);
+    await db.insert(messages).values({
+      id: localId('payfail'), conversationId,
+      fromNumber: bizPhone, toNumber: fromPhone, type: 'interactive',
+      text: `⚠ Payment request not sent — ${reason}`,
+      status: 'failed', isOutgoing: true, sentBy: 'agent', sentAt: new Date(),
+    }).onConflictDoNothing();
+  }
+
+  await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conversationId)).catch(() => {});
+}
+
 /** Fetch conversation history, run the agent, and send the reply. */
 async function agentReply({
   conversationId,
@@ -397,14 +507,16 @@ async function agentReply({
   bizPhone,
   userText,
   focusProductId,
+  focusCategoryId,
 }: {
   conversationId: string;
   toPhone: string;
   bizPhone: string;
   userText: string;
   focusProductId?: string;
+  focusCategoryId?: string;
 }) {
-  console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}" focus=${focusProductId ?? 'none'}`);
+  console.log(`[agent] ▶ triggered for conv=${conversationId} msg="${userText}" focusProduct=${focusProductId ?? 'none'} focusCategory=${focusCategoryId ?? 'none'}`);
 
   // Most recent 30 messages as context, then put them back in chronological order.
   // (Ordering desc + limit gets the LATEST 30; asc + limit would wrongly grab the
@@ -423,7 +535,7 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory, { focusProductId });
+  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory, { focusProductId, focusCategoryId });
   console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} custom=${customMessage?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;
