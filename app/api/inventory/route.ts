@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, media, inAgentContext, parentId, variantAttributes,
+      customInfo, contentId, media, inAgentContext, parentId, variantAttributes,
     } = body;
 
     if (!name?.trim()) {
@@ -51,6 +51,7 @@ export async function POST(req: NextRequest) {
         fabric:            fabric      || null,
         occasions:         occasions   || null,
         customInfo:        customInfo  || null,
+        contentId:         contentId?.trim() || null,
         media:             cleanMedia(media),
         parentId:          parentId    || null,
         variantAttributes: cleanVariantAttributes(variantAttributes),

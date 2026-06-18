@@ -434,6 +434,9 @@ export const catalogProducts = pgTable('catalog_products', {
   variantAttributes: jsonb('variant_attributes').$type<VariantAttribute[]>().notNull().default(sql`'[]'::jsonb`),
   // Retailer / WhatsApp catalog product ID — legacy, unused
   retailerId:  varchar('retailer_id', { length: 255 }),
+  // Owner-defined reference id (e.g. a WhatsApp catalog content id) to link this
+  // product to external systems / use as a reference later.
+  contentId:   varchar('content_id', { length: 255 }),
   // Extra notes the admin writes so the agent can explain the product better
   customInfo:  text('custom_info'),
   isActive:    boolean('is_active').notNull().default(true),

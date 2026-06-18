@@ -13,7 +13,7 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, media, isActive, inAgentContext, featured, parentId, variantAttributes,
+      customInfo, contentId, media, isActive, inAgentContext, featured, parentId, variantAttributes,
     } = body;
 
     // Toggling agent-context alone doesn't change product content, so keep the
@@ -35,6 +35,7 @@ export async function PATCH(
         ...(fabric            !== undefined && { fabric }),
         ...(occasions         !== undefined && { occasions }),
         ...(customInfo        !== undefined && { customInfo }),
+        ...(contentId         !== undefined && { contentId: contentId?.trim() || null }),
         ...(media             !== undefined && { media: cleanMedia(media) }),
         ...(parentId          !== undefined && { parentId: parentId || null }),
         ...(variantAttributes !== undefined && { variantAttributes: cleanVariantAttributes(variantAttributes) }),

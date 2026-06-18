@@ -16,6 +16,7 @@ const productColumns = {
   parentId:          catalogProducts.parentId,
   variantAttributes: catalogProducts.variantAttributes,
   customInfo:        catalogProducts.customInfo,
+  contentId:         catalogProducts.contentId,
   isActive:          catalogProducts.isActive,
   inAgentContext:    catalogProducts.inAgentContext,
   featured:          catalogProducts.featured,

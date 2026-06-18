@@ -25,7 +25,7 @@ interface Product {
   id: string; name: string; description: string | null;
   priceRange: string | null; category: string | null; categoryId: string | null;
   fabric: string | null; occasions: string | null;
-  media: ProductMedia[]; customInfo: string | null;
+  media: ProductMedia[]; customInfo: string | null; contentId: string | null;
   parentId: string | null; variantAttributes: VariantAttribute[];
   isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
   variants?: Product[];
@@ -33,7 +33,7 @@ interface Product {
 
 const EMPTY_PRODUCT = {
   name: '', description: '', priceRange: '', categoryId: '',
-  fabric: '', occasions: '', customInfo: '',
+  fabric: '', occasions: '', customInfo: '', contentId: '',
   media: [] as ProductMedia[],
   parentId: '' as string,
   variantAttributes: [] as VariantAttribute[],
@@ -303,6 +303,10 @@ function ProductFormCard({ initial, onSave, onCancel, loading, categories, paren
         <input value={form.occasions} onChange={set('occasions')} placeholder="e.g. Wedding, Festival" className={inputCls} />
       </div>
       <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Content ID <span className="text-white/25 normal-case">(reference — optional)</span></label>
+        <input value={form.contentId} onChange={set('contentId')} placeholder="e.g. WhatsApp catalog content id, SKU, or any reference" className={inputCls} />
+      </div>
+      <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Description</label>
         <textarea value={form.description} onChange={set('description')} rows={2}
           placeholder="Full product description the agent will use to answer customer questions…"
@@ -408,6 +412,7 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
     fabric:      p.fabric      ?? '',
     occasions:   p.occasions   ?? '',
     customInfo:  p.customInfo  ?? '',
+    contentId:   p.contentId   ?? '',
     media:       p.media       ?? [],
     parentId:    p.parentId    ?? '',
     variantAttributes: p.variantAttributes ?? [],
@@ -611,6 +616,9 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
                             {target.parentId ? <><GitBranch size={10} /> Variant</> : 'Product'}
                             {target.inAgentContext && <span className="flex items-center gap-0.5 text-[#25D366]/80"><Bot size={10} /> in agent</span>}
                           </p>
+                          {target.contentId && (
+                            <p className="text-white/30 text-[10px] mt-0.5 font-mono">ID: {target.contentId}</p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           {!target.parentId && (
