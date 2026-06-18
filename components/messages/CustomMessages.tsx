@@ -37,6 +37,52 @@ function SourceSelector({ value, onChange }: { value: 'manual' | 'categories' | 
 
 const fieldCls = 'w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-2 text-sm outline-none focus:border-wp-green transition-colors';
 
+/** Pick which categories/products to show (empty = all). Order follows selection. */
+function OptionPicker({ source, selected, onChange }: { source: 'categories' | 'products'; selected: string[]; onChange: (ids: string[]) => void }) {
+  const [items, setItems] = useState<{ id: string; name: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    const url = source === 'categories' ? '/api/categories' : '/api/inventory';
+    fetch(url).then(r => r.ok ? r.json() : []).then((data: { id: string; name: string; parentId?: string | null; isActive?: boolean }[]) => {
+      const list = source === 'categories'
+        ? data.map(c => ({ id: c.id, name: c.name }))
+        : data.filter(p => !p.parentId && p.isActive !== false).map(p => ({ id: p.id, name: p.name }));
+      setItems(list);
+    }).catch(() => setItems([])).finally(() => setLoading(false));
+  }, [source]);
+
+  const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide">
+          Which {source} to show {selected.length > 0 && `(${selected.length})`}
+        </label>
+        {selected.length > 0 && (
+          <button type="button" onClick={() => onChange([])} className="text-[11px] text-wp-green">Clear (show all)</button>
+        )}
+      </div>
+      {loading ? (
+        <p className="text-[11px] text-gray-400 dark:text-[#667781]">Loading {source}…</p>
+      ) : items.length === 0 ? (
+        <p className="text-[11px] text-gray-400 dark:text-[#667781]">No {source} found.</p>
+      ) : (
+        <div className="max-h-40 overflow-y-auto border border-gray-200 dark:border-[#2a3942] rounded-lg divide-y divide-gray-100 dark:divide-[#2a3942]">
+          {items.map(it => (
+            <label key={it.id} className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 dark:text-[#e9edef] cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34]">
+              <input type="checkbox" checked={selected.includes(it.id)} onChange={() => toggle(it.id)} className="accent-wp-green" />
+              {it.name}
+            </label>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-gray-400 dark:text-[#667781] mt-1">Leave all unchecked to show every {source} (up to the WhatsApp limit).</p>
+    </div>
+  );
+}
+
 /* ── Editor modal ─────────────────────────────────────────────────── */
 
 function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; onClose: () => void; onSaved: () => void }) {
@@ -174,7 +220,10 @@ function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; 
           {/* buttons */}
           {d.type === 'buttons' && (
             <div className="space-y-2">
-              <SourceSelector value={d.optionSource ?? 'manual'} onChange={v => set({ optionSource: v })} />
+              <SourceSelector value={d.optionSource ?? 'manual'} onChange={v => set({ optionSource: v, optionIds: [] })} />
+              {(d.optionSource === 'categories' || d.optionSource === 'products') && (
+                <OptionPicker source={d.optionSource} selected={d.optionIds ?? []} onChange={ids => set({ optionIds: ids })} />
+              )}
               {d.optionSource !== 'manual' ? null : (<>
               <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block">Buttons ({(d.buttons ?? []).length}/3)</label>
               {(d.buttons ?? []).map((b, i) => (
@@ -192,7 +241,10 @@ function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; 
           {d.type === 'list' && (
             <div className="space-y-2">
               <input value={d.listButton ?? ''} onChange={e => set({ listButton: e.target.value })} maxLength={20} placeholder="List button label (e.g. View options)" className={fieldCls} />
-              <SourceSelector value={d.optionSource ?? 'manual'} onChange={v => set({ optionSource: v })} />
+              <SourceSelector value={d.optionSource ?? 'manual'} onChange={v => set({ optionSource: v, optionIds: [] })} />
+              {(d.optionSource === 'categories' || d.optionSource === 'products') && (
+                <OptionPicker source={d.optionSource} selected={d.optionIds ?? []} onChange={ids => set({ optionIds: ids })} />
+              )}
               {d.optionSource !== 'manual' ? null : (<>
               <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block">Options ({totalRows}/10)</label>
               {sections.map((s, si) => (

@@ -27,6 +27,7 @@ export interface CustomMessage {
   listButton?: string;                 // list opener label (≤20)
   sections?: CustomMessageSection[];   // list (≤10 rows total) — manual options
   optionSource?: OptionSource;         // list/buttons: where options come from
+  optionIds?: string[];                // when source is categories/products: which ones to show (empty = all), in order
   agentDescription?: string;           // what this message is for — helps the agent pick it
   triggerHint?: string;                // when the agent should send it
   isActive: boolean;
@@ -87,6 +88,9 @@ export function cleanCustomMessage(input: any): Omit<CustomMessage, 'id' | 'crea
 
   if (type === 'buttons') {
     out.optionSource = source;
+    out.optionIds = source !== 'manual' && Array.isArray(input?.optionIds)
+      ? input.optionIds.map((x: any) => String(x)).filter(Boolean)
+      : undefined;
     out.header = input?.header ? String(input.header) : undefined;
     out.footer = input?.footer ? String(input.footer) : undefined;
     // Optional media (image/video) header shown above the body + buttons.
@@ -101,6 +105,9 @@ export function cleanCustomMessage(input: any): Omit<CustomMessage, 'id' | 'crea
 
   if (type === 'list') {
     out.optionSource = source;
+    out.optionIds = source !== 'manual' && Array.isArray(input?.optionIds)
+      ? input.optionIds.map((x: any) => String(x)).filter(Boolean)
+      : undefined;
     out.header = input?.header ? String(input.header) : undefined;
     out.footer = input?.footer ? String(input.footer) : undefined;
     out.listButton = (input?.listButton ? String(input.listButton) : 'View options').slice(0, 20);

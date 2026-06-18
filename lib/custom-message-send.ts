@@ -13,12 +13,19 @@ async function mediaHeader(m: CustomMessageMedia | null | undefined): Promise<{ 
 
 /** Build option rows from live inventory for a dynamic (category/product) list/buttons.
  *  Each row id is `cmopt:<kind>:<id>` so a tap is intercepted to reply with details. */
-async function dynamicRows(source: 'categories' | 'products', limit: number): Promise<{ id: string; title: string; description?: string }[]> {
+/** Keep only the chosen ids, in the chosen order. Empty/undefined ⇒ keep all. */
+function pickByIds<T extends { id: string }>(items: T[], ids?: string[]): T[] {
+  if (!ids?.length) return items;
+  const order = new Map(ids.map((id, i) => [id, i]));
+  return items.filter(i => order.has(i.id)).sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+}
+
+async function dynamicRows(source: 'categories' | 'products', limit: number, ids?: string[]): Promise<{ id: string; title: string; description?: string }[]> {
   if (source === 'categories') {
-    const cats = await getAllCategories();
+    const cats = pickByIds(await getAllCategories(), ids);
     return cats.slice(0, limit).map(c => ({ id: `cmopt:category:${c.id}`, title: c.name.slice(0, 24), description: c.description ?? undefined }));
   }
-  const products = (await getAllInventory()).filter(p => !p.parentId && p.isActive);
+  const products = pickByIds((await getAllInventory()).filter(p => !p.parentId && p.isActive), ids);
   return products.slice(0, limit).map(p => ({ id: `cmopt:product:${p.id}`, title: p.name.slice(0, 24), description: p.priceRange ?? undefined }));
 }
 
@@ -48,7 +55,7 @@ export async function sendCustomMessage(to: string, m: CustomMessage): Promise<C
     case 'buttons': {
       const dynamic = m.optionSource && m.optionSource !== 'manual';
       const buttons = dynamic
-        ? (await dynamicRows(m.optionSource as 'categories' | 'products', 3)).map(r => ({ id: r.id, title: r.title }))
+        ? (await dynamicRows(m.optionSource as 'categories' | 'products', 3, m.optionIds)).map(r => ({ id: r.id, title: r.title }))
         : (m.buttons ?? []).slice(0, 3).map((b, i) => ({ id: `opt_${i}`, title: b.title.slice(0, 20) }));
       if (!buttons.length) throw new Error('buttons message has no options');
       // WhatsApp requires a non-empty body — fall back to header/name if blank.
@@ -67,7 +74,7 @@ export async function sendCustomMessage(to: string, m: CustomMessage): Promise<C
       const dynamic = m.optionSource && m.optionSource !== 'manual';
 
       const sections = dynamic
-        ? [{ title: m.optionSource === 'categories' ? 'Categories' : 'Products', rows: await dynamicRows(m.optionSource as 'categories' | 'products', 10) }]
+        ? [{ title: m.optionSource === 'categories' ? 'Categories' : 'Products', rows: await dynamicRows(m.optionSource as 'categories' | 'products', 10, m.optionIds) }]
         : (m.sections ?? []).map(s => ({
             title: s.title,
             rows: s.rows.map((r, i) => ({ id: `row_${i}_${r.title}`.slice(0, 200), title: r.title, description: r.description })),
