@@ -33,6 +33,10 @@ interface SendInteractivePayload {
   to: string;
   bodyText: string;
   buttons: { id: string; title: string }[];
+  // Optional media header (image/video/document) shown above the body + buttons.
+  header?: { type: 'image' | 'video' | 'document'; link: string };
+  headerText?: string;   // text header (ignored when a media header is set)
+  footerText?: string;
 }
 
 async function graphRequest(method: string, endpoint: string, body?: object) {
@@ -327,21 +331,27 @@ export async function sendMediaMessage({ to, type, mediaId, mediaUrl, caption, f
   });
 }
 
-export async function sendInteractiveMessage({ to, bodyText, buttons }: SendInteractivePayload) {
+export async function sendInteractiveMessage({ to, bodyText, buttons, header, headerText, footerText }: SendInteractivePayload) {
+  const interactive: Record<string, any> = {
+    type: 'button',
+    body: { text: bodyText },
+    action: {
+      buttons: buttons.map((b) => ({
+        type: 'reply',
+        reply: { id: b.id, title: b.title },
+      })),
+    },
+  };
+  // A media header (image/video/document) wins over a text header — WhatsApp allows only one.
+  if (header) interactive.header = { type: header.type, [header.type]: { link: header.link } };
+  else if (headerText) interactive.header = { type: 'text', text: headerText };
+  if (footerText) interactive.footer = { text: footerText };
+
   return graphRequest('POST', `${PHONE_NUMBER_ID}/messages`, {
     messaging_product: 'whatsapp',
     to,
     type: 'interactive',
-    interactive: {
-      type: 'button',
-      body: { text: bodyText },
-      action: {
-        buttons: buttons.map((b) => ({
-          type: 'reply',
-          reply: { id: b.id, title: b.title },
-        })),
-      },
-    },
+    interactive,
   });
 }
 
