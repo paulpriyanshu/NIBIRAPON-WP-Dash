@@ -1,7 +1,15 @@
 import { sendTextMessage, sendInteractiveMessage, sendListMessage } from '@/lib/whatsapp-api';
 import { sendMediaResilient } from '@/lib/media-send';
-import { customMessageOptions, type CustomMessage } from '@/lib/custom-messages';
+import { getSendUrl } from '@/lib/inventory-media';
+import { customMessageOptions, type CustomMessage, type CustomMessageMedia } from '@/lib/custom-messages';
 import { getAllCategories, getAllInventory } from '@/lib/queries/inventory';
+
+/** Resolve a custom-message media item to a header WhatsApp can fetch (image/video). */
+async function mediaHeader(m: CustomMessageMedia | null | undefined): Promise<{ type: 'image' | 'video'; link: string } | undefined> {
+  if (!m || (!m.assetId && !m.url)) return undefined;
+  const link = m.assetId ? await getSendUrl(m.assetId) : m.url;
+  return link ? { type: m.type, link } : undefined;
+}
 
 /** Build option rows from live inventory for a dynamic (category/product) list/buttons.
  *  Each row id is `cmopt:<kind>:<id>` so a tap is intercepted to reply with details. */
@@ -45,7 +53,13 @@ export async function sendCustomMessage(to: string, m: CustomMessage): Promise<C
       if (!buttons.length) throw new Error('buttons message has no options');
       // WhatsApp requires a non-empty body — fall back to header/name if blank.
       const bodyText = m.body?.trim() || m.header?.trim() || m.name;
-      const res = await sendInteractiveMessage({ to, bodyText, buttons });
+      // Optional media (image/video) header above the body + buttons.
+      const header = await mediaHeader(m.media);
+      const res = await sendInteractiveMessage({
+        to, bodyText, buttons, header,
+        headerText: header ? undefined : (m.header?.trim() || undefined),
+        footerText: m.footer?.trim() || undefined,
+      });
       return { msgId: res?.messages?.[0]?.id, recordType: 'interactive', text: bodyText, optionTitles: options };
     }
 

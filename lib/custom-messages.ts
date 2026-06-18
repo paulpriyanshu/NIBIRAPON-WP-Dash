@@ -48,12 +48,15 @@ export function customMessageOptions(m: Pick<CustomMessage, 'type' | 'buttons' |
 /** A short, human-readable preview of a custom message (editor preview + agent context). */
 export function renderCustomPreview(m: CustomMessage): string {
   const lines: string[] = [];
-  if (m.header) lines.push(m.header);
+  // A media header (on a media message, or on a buttons message) shows first.
   if (m.type === 'media') {
     lines.push(`[${m.media?.type ?? 'image'}]${m.caption ? ` ${m.caption}` : ''}`);
-  } else if (m.body) {
-    lines.push(m.body);
+  } else if (m.media && (m.media.assetId || m.media.url)) {
+    lines.push(`[${m.media.type} header]`);
+  } else if (m.header) {
+    lines.push(m.header);
   }
+  if (m.type !== 'media' && m.body) lines.push(m.body);
   if (m.footer) lines.push(m.footer);
   const opts = customMessageOptions(m);
   if (m.type === 'buttons' && opts.length) lines.push(`Buttons: ${opts.join(' | ')}`);
@@ -86,6 +89,11 @@ export function cleanCustomMessage(input: any): Omit<CustomMessage, 'id' | 'crea
     out.optionSource = source;
     out.header = input?.header ? String(input.header) : undefined;
     out.footer = input?.footer ? String(input.footer) : undefined;
+    // Optional media (image/video) header shown above the body + buttons.
+    const md = input?.media;
+    out.media = md && (md.assetId || md.url)
+      ? { type: md.type === 'video' ? 'video' : 'image', assetId: md.assetId || undefined, url: md.url || undefined }
+      : null;
     out.buttons = Array.isArray(input?.buttons)
       ? input.buttons.map((b: any) => ({ title: String(b?.title ?? '').trim().slice(0, 20) })).filter((b: CustomMessageButton) => b.title).slice(0, 3)
       : [];
