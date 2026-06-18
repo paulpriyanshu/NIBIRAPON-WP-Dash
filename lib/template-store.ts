@@ -5,6 +5,7 @@ import type { TemplateMessageConfig } from '@/lib/templates';
 const DB              = 'nibiraponcollections';
 const TEMPLATE_MSGS   = 'template_messages';
 const AGENT_DRAFTS    = 'agent_drafts';
+const TEMPLATE_META   = 'template_agent_meta';
 
 /** Document shapes stored in Mongo. */
 export interface TemplateMessageDoc extends Document {
@@ -36,6 +37,26 @@ export async function templateMessagesColl(): Promise<Collection<TemplateMessage
 
 export async function agentDraftsColl(): Promise<Collection<AgentDraftDoc>> {
   return (await getMongoClient()).db(DB).collection<AgentDraftDoc>(AGENT_DRAFTS);
+}
+
+/** App-local agent instructions attached to a raw WhatsApp template (keyed by
+ *  templateName). NOT part of the WhatsApp template — editing it never triggers
+ *  a Meta re-approval. Saved messages built from the template inherit these. */
+export interface TemplateAgentMetaDoc extends Document {
+  templateName: string;
+  agentDescription?: string;
+  whenToSend?: string;
+  updatedAt: Date;
+}
+
+export async function templateAgentMetaColl(): Promise<Collection<TemplateAgentMetaDoc>> {
+  return (await getMongoClient()).db(DB).collection<TemplateAgentMetaDoc>(TEMPLATE_META);
+}
+
+/** Map of templateName → { agentDescription, whenToSend } for the agent context. */
+export async function getTemplateAgentMetaMap(): Promise<Map<string, { agentDescription?: string; whenToSend?: string }>> {
+  const docs = await (await templateAgentMetaColl()).find({}).toArray().catch(() => []);
+  return new Map(docs.map(d => [d.templateName, { agentDescription: d.agentDescription, whenToSend: d.whenToSend }]));
 }
 
 /** Parse a string id into an ObjectId, returning null if malformed. */

@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { db } from '@/db';
 import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
 import { eq, and, isNull, isNotNull, asc } from 'drizzle-orm';
-import { agentDraftsColl, templateMessagesColl, toObjectId } from '@/lib/template-store';
+import { agentDraftsColl, templateMessagesColl, toObjectId, getTemplateAgentMetaMap } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
 import { customMessageOptions, renderCustomPreview, type CustomMessage } from '@/lib/custom-messages';
@@ -254,17 +254,21 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     }
   }
 
+  // Agent instructions attached to the raw WhatsApp template (by templateName) —
+  // the lowest-precedence fallback, inherited by every message built from it.
+  const tmplMetaMap = await getTemplateAgentMetaMap().catch(() => new Map());
+
   const templateDrafts: ResolvedTemplateDraft[] = tmplDraftDocs
     .map(d => {
       const m = msgsById.get(d.templateMessageId!);
       if (!m) return null;
-      // The template message's own agent description / when-to-send are the source
-      // of truth; a draft-level note (if set) overrides them.
+      // Precedence: draft note → saved-message note → raw-template instruction.
+      const meta = tmplMetaMap.get(m.templateName);
       return {
         id:           d._id.toString(),
         name:         d.name,
-        triggerHint:  d.triggerHint ?? m.whenToSend ?? null,
-        description:  d.description ?? m.agentDescription ?? null,
+        triggerHint:  d.triggerHint ?? m.whenToSend ?? meta?.whenToSend ?? null,
+        description:  d.description ?? m.agentDescription ?? meta?.agentDescription ?? null,
         templateName: m.templateName,
         language:     m.language,
         config:       m.config,
@@ -343,7 +347,8 @@ You are not a passive FAQ bot. You actively guide the customer toward a purchase
 - Nibirapon is FemFashion's flagship label known for quality, elegance, and authenticity.
 - We sell: Banarasi Silk, Kanjeevaram, Chanderi, Georgette, Linen, Cotton, Organza, Chiffon sarees.
 - Price range: ₹1,500 (casual Cotton/Linen) → ₹50,000+ (Pure Silk Banarasi/Kanjivaram).
-- Pan-India delivery; COD available on most orders.
+- Pan-India delivery; COD is not allowed on orders only pre-paid
+.
 
 ## Rules
 1. Reply in the SAME language the customer uses (Hindi / Hinglish / English).
@@ -351,7 +356,7 @@ You are not a passive FAQ bot. You actively guide the customer toward a purchase
 3. ALWAYS END YOUR REPLY WITH A FOLLOW-UP QUESTION that moves the chat forward — e.g. offer to show other options or colours, give a recommendation, ask their occasion/budget, or nudge toward placing the order. Never end on a flat statement; always invite the next step.
 4. ALWAYS use the recent conversation above for context. The customer usually answers your previous question with a short message — e.g. "UPI", "COD", "card", a name, a phone number, a pincode, or an address like "New Delhi B3 17". These are part of the ongoing order conversation — accept and act on them. NEVER treat them as off-topic.
 5. Stay focused on sarees, ethnic wear, and helping the customer buy. Greetings, pleasantries and small talk ("hey", "hi", "how are you", "thanks") are ALWAYS welcome — respond warmly, never with the refusal line. Only when the customer CLEARLY switches to a genuinely unrelated topic (weather, politics, coding, etc.) reply warmly while redirecting: "I'd love to help you with our beautiful sarees instead 😊 — what occasion are you shopping for?". When unsure, assume it IS related and keep helping — do not refuse.
-6. Never mention competitor brands.
+si6. Never mention competitor brands.
 7. When the customer asks ANYTHING about a product (look, colour, fabric, drape, border, blouse, fit, styling), ANSWER IT using that product's title, description and its 📷 photo descriptions in the catalog below. Those photo descriptions tell you what each picture shows — treat them as your own eyes. NEVER paste a photo description to the customer; they are internal notes only. If a detail truly isn't in the info you have, say so honestly.
 8. When the customer wants to buy, guide them step by step: confirm which saree, then ask for the delivery address and payment method one at a time, and once you have them, share the payment details / next step.
 9. Never ignore or reject a delivery address or payment method the customer gives you.
