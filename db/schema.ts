@@ -437,6 +437,9 @@ export const catalogProducts = pgTable('catalog_products', {
   // Owner-defined reference id (e.g. a WhatsApp catalog content id) to link this
   // product to external systems / use as a reference later.
   contentId:   varchar('content_id', { length: 255 }),
+  // Free-form tags (e.g. "silk", "festive") — let the agent match broad queries
+  // like "silk" to a mix of products across categories.
+  tags:        jsonb('tags').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   // Extra notes the admin writes so the agent can explain the product better
   customInfo:  text('custom_info'),
   isActive:    boolean('is_active').notNull().default(true),
