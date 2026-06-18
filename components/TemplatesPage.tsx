@@ -643,36 +643,60 @@ function EditTemplateModal({ template, onClose, onSaved }: {
   const [headerText, setHeaderText] = useState(headerComp?.text ?? '');
   const [bodyText,   setBodyText]   = useState(bodyComp?.text   ?? '');
   const [footerText, setFooterText] = useState(footerComp?.text ?? '');
+  const [agentDescription, setAgentDescription] = useState('');
+  const [whenToSend,       setWhenToSend]       = useState('');
   const [saving,     setSaving]     = useState(false);
   const [result,     setResult]     = useState<{ ok: boolean; msg: string } | null>(null);
 
   const headerIsText = headerComp?.format === 'TEXT';
 
+  // Load any existing agent instructions for this template.
+  useEffect(() => {
+    fetch(`/api/template-agent-meta?name=${encodeURIComponent(template.name)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { setAgentDescription(d.agentDescription ?? ''); setWhenToSend(d.whenToSend ?? ''); } })
+      .catch(() => {});
+  }, [template.name]);
+
   async function handleSave() {
     setSaving(true);
     setResult(null);
     try {
-      // Rebuild components array preserving structure
-      const components: object[] = [];
-      if (headerComp) {
-        if (headerIsText) {
-          components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
-        } else {
-          components.push({ type: 'HEADER', format: headerComp.format });
-        }
-      }
-      if (bodyComp)   components.push({ type: 'BODY',   text: bodyText });
-      if (footerComp) components.push({ type: 'FOOTER', text: footerText });
-      if (btnsComp)   components.push(btnsComp);
-
-      const res = await fetch(`/api/templates/${template.id}`, {
-        method: 'PATCH',
+      // 1. Agent instructions are app-local — always save them, no Meta re-approval.
+      await fetch('/api/template-agent-meta', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ components }),
+        body: JSON.stringify({ templateName: template.name, agentDescription, whenToSend }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed');
-      setResult({ ok: true, msg: 'Template updated — status reset to Pending review by Meta.' });
+
+      // 2. Only push content to Meta if the actual template text changed — this is
+      //    what resets approval to Pending, so we avoid it when only instructions changed.
+      const contentChanged =
+        headerText !== (headerComp?.text ?? '') ||
+        bodyText   !== (bodyComp?.text   ?? '') ||
+        footerText !== (footerComp?.text ?? '');
+
+      if (contentChanged) {
+        const components: object[] = [];
+        if (headerComp) {
+          if (headerIsText) components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
+          else              components.push({ type: 'HEADER', format: headerComp.format });
+        }
+        if (bodyComp)   components.push({ type: 'BODY',   text: bodyText });
+        if (footerComp) components.push({ type: 'FOOTER', text: footerText });
+        if (btnsComp)   components.push(btnsComp);
+
+        const res = await fetch(`/api/templates/${template.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ components }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        setResult({ ok: true, msg: 'Saved — content changed, so Meta reset the template to Pending review.' });
+      } else {
+        setResult({ ok: true, msg: 'Agent instructions saved. (Template content unchanged — still approved.)' });
+      }
       onSaved();
     } catch (e: any) {
       setResult({ ok: false, msg: e.message });
@@ -752,6 +776,26 @@ function EditTemplateModal({ template, onClose, onSaved }: {
               The header uses a <strong>{headerComp.format?.toLowerCase()}</strong> — media cannot be changed here. Use Meta Business Manager to swap the header format.
             </div>
           )}
+
+          {/* AI agent instructions — app-local, no Meta re-approval. Saved messages
+              built from this template inherit these. */}
+          <div className="rounded-xl border border-purple-300/50 dark:border-purple-400/25 bg-purple-50/60 dark:bg-purple-500/5 p-3 space-y-3">
+            <p className="text-[11px] text-purple-700 dark:text-purple-300/80 leading-relaxed">
+              AI agent instructions — these tell Riya what this template is and when to use it (the name often doesn&apos;t). Not part of the WhatsApp template; saving them does <strong>not</strong> require Meta re-approval.
+            </p>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block mb-1.5">Agent description — what is this template?</label>
+              <textarea value={agentDescription} onChange={(e) => setAgentDescription(e.target.value)} rows={2}
+                placeholder="e.g. Showcase of our Cotton Sarees — product list with prices for the Cotton category"
+                className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-wp-green transition-colors resize-none" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block mb-1.5">When should the agent send it?</label>
+              <textarea value={whenToSend} onChange={(e) => setWhenToSend(e.target.value)} rows={2}
+                placeholder="e.g. When the customer picks the Cotton category or asks to see cotton sarees"
+                className="w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-wp-green transition-colors resize-none" />
+            </div>
+          </div>
 
           {result && (
             <div className={`flex items-start gap-2 rounded-xl px-4 py-3 text-sm ${result.ok ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'}`}>
