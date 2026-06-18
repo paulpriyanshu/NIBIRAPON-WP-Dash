@@ -10,10 +10,12 @@ export function productToText(p: typeof catalogProducts.$inferSelect): string {
   const mediaDescs = ((p.media ?? []) as ProductMedia[])
     .map(m => m.description)
     .filter(Boolean);
+  const tags = (p.tags ?? []) as string[];
   const parts = [
     p.name,
     p.category   && `Category: ${p.category}`,
     p.fabric     && `Fabric: ${p.fabric}`,
+    tags.length  && `Tags: ${tags.join(', ')}`,
     p.occasions  && `Occasions: ${p.occasions}`,
     p.priceRange && `Price: ${p.priceRange}`,
     p.description,

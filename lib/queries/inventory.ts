@@ -16,6 +16,8 @@ const productColumns = {
   parentId:          catalogProducts.parentId,
   variantAttributes: catalogProducts.variantAttributes,
   customInfo:        catalogProducts.customInfo,
+  contentId:         catalogProducts.contentId,
+  tags:              catalogProducts.tags,
   isActive:          catalogProducts.isActive,
   inAgentContext:    catalogProducts.inAgentContext,
   featured:          catalogProducts.featured,
@@ -111,6 +113,7 @@ const publicProductColumns = {
   media:             catalogProducts.media,
   parentId:          catalogProducts.parentId,
   variantAttributes: catalogProducts.variantAttributes,
+  tags:              catalogProducts.tags,
   createdAt:         catalogProducts.createdAt,
 } as const;
 

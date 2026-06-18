@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
 import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
-import { eq, and, isNull, isNotNull, asc } from 'drizzle-orm';
+import { eq, and, isNull, asc } from 'drizzle-orm';
 import { agentDraftsColl, templateMessagesColl, toObjectId, getTemplateAgentMetaMap } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
@@ -63,29 +63,35 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // Only products the admin has added to the agent's context are considered.
 
 async function getRelevantProducts(query: string, topN = 5): Promise<ProductRow[]> {
-  const synced = await db
+  const products = await db
     .select()
     .from(catalogProducts)
     .where(and(
       eq(catalogProducts.inAgentContext, true),
       eq(catalogProducts.isActive, true),
-      isNotNull(catalogProducts.embedding),
     ));
 
-  if (synced.length === 0) return [];
+  if (products.length === 0) return [];
 
-  const embRes = await openai.embeddings.create({
-    model: 'text-embedding-3-small',
-    input: query,
+  // Embed the query (best-effort — tag matching still works if this fails).
+  let queryVec: number[] | null = null;
+  try {
+    const embRes = await openai.embeddings.create({ model: 'text-embedding-3-small', input: query });
+    queryVec = embRes.data[0].embedding;
+  } catch { queryVec = null; }
+
+  const q = query.toLowerCase();
+  const scored = products.map(p => {
+    const emb = Array.isArray(p.embedding) ? (p.embedding as number[]) : null;
+    let score = queryVec && emb && emb.length ? cosineSimilarity(queryVec, emb) : 0;
+    // Boost products whose tag appears in the query (e.g. "silk" → every silk-tagged
+    // product), so a broad request returns a mix across categories.
+    const tags = (p.tags ?? []) as string[];
+    if (tags.some(t => t && q.includes(t.toLowerCase()))) score += 0.25;
+    return { p, score };
   });
-  const queryVec = embRes.data[0].embedding;
 
-  return synced
-    .filter(p => Array.isArray(p.embedding) && p.embedding.length > 0)
-    .map(p => ({ p, score: cosineSimilarity(queryVec, p.embedding as number[]) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topN)
-    .map(({ p }) => p);
+  return scored.sort((a, b) => b.score - a.score).slice(0, topN).map(s => s.p);
 }
 
 /** Fetch one active product by id — used to pin a product the customer tapped. */
@@ -149,6 +155,7 @@ function formatCatalogContext(products: ProductRow[]): string {
       p.category    && `(${p.category})`,
       p.priceRange  && `— ${p.priceRange}`,
       p.fabric      && `| Fabric: ${p.fabric}`,
+      ((p.tags ?? []) as string[]).length && `| Tags: ${((p.tags ?? []) as string[]).join(', ')}`,
       p.occasions   && `| For: ${p.occasions}`,
       p.description && `\n  ${p.description}`,
       p.customInfo  && `\n  📌 Extra info: ${p.customInfo}`,
@@ -366,6 +373,7 @@ si6. Never mention competitor brands.
 - ALWAYS write a warm, conversational text reply in your message content — describe the product in your own words and end with a follow-up question. Never send photos silently.
 - When the customer is interested in, asks about, or would benefit from seeing specific product(s) listed in the catalog below, ALSO call the \`send_product_media\` tool with those products' ids. Their photos/videos are sent automatically, captioned with the product title + description — so you don't repeat the title/description verbatim; instead add a friendly human touch and a question.
 - Only use ids that appear in the catalog section. Never invent ids. If no product is relevant, just reply with text and don't call the tool.
+- When the customer asks for a BROAD type rather than one item (e.g. "silk", "cotton", "something festive"), the catalog below already holds a MIX of matching products (by their Tags). Offer a few of them — ideally as a \`send_product_list\` picker, or send 2-3 with \`send_product_media\` — spanning different options, not just one.
 
 ## PREFER YOUR SAVED CONTENT (important)
 - Before building your own list or writing your own options message, ALWAYS look at the "Templates" and "Custom messages" sections below. If a saved template draft or custom message fits the situation, SEND THAT (call \`send_template_draft\` / \`send_custom_message\`) instead of composing your own. These are hand-crafted by the team and look better.

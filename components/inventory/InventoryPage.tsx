@@ -25,7 +25,7 @@ interface Product {
   id: string; name: string; description: string | null;
   priceRange: string | null; category: string | null; categoryId: string | null;
   fabric: string | null; occasions: string | null;
-  media: ProductMedia[]; customInfo: string | null;
+  media: ProductMedia[]; customInfo: string | null; contentId: string | null; tags: string[];
   parentId: string | null; variantAttributes: VariantAttribute[];
   isActive: boolean; inAgentContext: boolean; syncedAt: string | null;
   variants?: Product[];
@@ -33,8 +33,9 @@ interface Product {
 
 const EMPTY_PRODUCT = {
   name: '', description: '', priceRange: '', categoryId: '',
-  fabric: '', occasions: '', customInfo: '',
+  fabric: '', occasions: '', customInfo: '', contentId: '',
   media: [] as ProductMedia[],
+  tags: [] as string[],
   parentId: '' as string,
   variantAttributes: [] as VariantAttribute[],
 };
@@ -233,6 +234,40 @@ function VariantAttributesEditor({ attrs, onChange }: {
   );
 }
 
+/* ── Tags editor ─────────────────────────────────────────────────── */
+
+function TagsEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const v = draft.trim();
+    if (v && !tags.some(t => t.toLowerCase() === v.toLowerCase())) onChange([...tags, v]);
+    setDraft('');
+  };
+  const remove = (i: number) => onChange(tags.filter((_, idx) => idx !== i));
+  return (
+    <div className="space-y-1.5">
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {tags.map((t, i) => (
+            <span key={i} className="flex items-center gap-1 text-[11px] bg-[#25D366]/15 text-[#25D366] px-2 py-0.5 rounded-full">
+              {t}
+              <button type="button" onClick={() => remove(i)} className="hover:text-red-400"><X size={10} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); } }}
+        onBlur={add}
+        placeholder="Type a tag and press Enter — e.g. silk, festive, handloom"
+        className={inputCls}
+      />
+    </div>
+  );
+}
+
 /* ── Product form ────────────────────────────────────────────────── */
 
 function ProductFormCard({ initial, onSave, onCancel, loading, categories, parentOptions, lockParentName }: {
@@ -301,6 +336,14 @@ function ProductFormCard({ initial, onSave, onCancel, loading, categories, paren
       <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Occasions</label>
         <input value={form.occasions} onChange={set('occasions')} placeholder="e.g. Wedding, Festival" className={inputCls} />
+      </div>
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Content ID <span className="text-white/25 normal-case">(reference — optional)</span></label>
+        <input value={form.contentId} onChange={set('contentId')} placeholder="e.g. WhatsApp catalog content id, SKU, or any reference" className={inputCls} />
+      </div>
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Tags <span className="text-white/25 normal-case">— agent matches broad queries like "silk"</span></label>
+        <TagsEditor tags={form.tags} onChange={t => setForm(f => ({ ...f, tags: t }))} />
       </div>
       <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Description</label>
@@ -408,6 +451,8 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
     fabric:      p.fabric      ?? '',
     occasions:   p.occasions   ?? '',
     customInfo:  p.customInfo  ?? '',
+    contentId:   p.contentId   ?? '',
+    tags:        p.tags        ?? [],
     media:       p.media       ?? [],
     parentId:    p.parentId    ?? '',
     variantAttributes: p.variantAttributes ?? [],
@@ -456,7 +501,7 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
 
       {/* body */}
       {tab === 'categories' ? (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="flex-1 min-h-0">
           <CategoriesPanel categories={categories} onChange={loadCategories} />
         </div>
       ) : (
@@ -611,6 +656,9 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
                             {target.parentId ? <><GitBranch size={10} /> Variant</> : 'Product'}
                             {target.inAgentContext && <span className="flex items-center gap-0.5 text-[#25D366]/80"><Bot size={10} /> in agent</span>}
                           </p>
+                          {target.contentId && (
+                            <p className="text-white/30 text-[10px] mt-0.5 font-mono">ID: {target.contentId}</p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           {!target.parentId && (

@@ -1,9 +1,19 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
-  Tags, Plus, Trash2, Pencil, Check, Loader2, Bot, ImageIcon,
+  Tags, Plus, Trash2, Pencil, Check, Loader2, Bot, ImageIcon, Package,
 } from 'lucide-react';
 import { inputCls, imageSrc, SingleImagePicker, type SingleImage } from './shared';
+
+interface CatProductMedia { type: 'image' | 'video'; assetId?: string; url?: string }
+interface CatProduct {
+  id: string; name: string; priceRange: string | null; description: string | null;
+  categoryId: string | null; parentId: string | null; media: CatProductMedia[];
+}
+function productMediaSrc(m?: CatProductMedia): string {
+  if (!m) return '';
+  return m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? '');
+}
 
 export interface Category {
   id: string;
@@ -76,6 +86,23 @@ export default function CategoriesPanel({ categories, onChange }: {
   const [showForm, setShowForm] = useState(false);
   const [editId,   setEditId]   = useState<string | null>(null);
   const [saving,   setSaving]   = useState(false);
+  const [products, setProducts] = useState<CatProduct[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Load all products once so we can list them under their category.
+  useEffect(() => {
+    fetch('/api/inventory').then(r => r.ok ? r.json() : []).then((rows: CatProduct[]) => setProducts(rows)).catch(() => {});
+  }, []);
+
+  // Top-level products grouped by category id.
+  const byCategory = new Map<string, CatProduct[]>();
+  for (const p of products) {
+    if (p.parentId || !p.categoryId) continue;
+    const arr = byCategory.get(p.categoryId) ?? [];
+    arr.push(p);
+    byCategory.set(p.categoryId, arr);
+  }
+  const selected = categories.find(c => c.id === selectedId) ?? null;
 
   const payload = (data: CategoryForm) => ({
     name:           data.name,
@@ -100,70 +127,142 @@ export default function CategoriesPanel({ categories, onChange }: {
   const deleteCategory = async (id: string) => {
     if (!confirm('Delete this category? Products in it will be uncategorised.')) return;
     await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+    if (selectedId === id) setSelectedId(null);
     onChange();
   };
 
+  const selectedProds = selected ? (byCategory.get(selected.id) ?? []) : [];
+
   return (
-    <div className="space-y-3 max-w-3xl">
-      <div className="flex justify-end">
-        <button onClick={() => { setShowForm(true); setEditId(null); }}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] transition-all">
-          <Plus size={14} /> Add Category
-        </button>
-      </div>
-
-      {showForm && <CategoryFormCard onSave={addCategory} onCancel={() => setShowForm(false)} loading={saving} />}
-
-      {categories.length === 0 && !showForm ? (
-        <div className="text-center py-16 text-white/20">
-          <Tags size={32} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm">No categories yet</p>
-          <p className="text-xs mt-1 text-white/15">Add categories with images for the agent to show customers</p>
+    <div className="h-full flex">
+      {/* ── LEFT: category list ─────────────────────────────────── */}
+      <div className="w-[340px] shrink-0 border-r border-white/8 flex flex-col">
+        <div className="p-3 border-b border-white/8">
+          <button onClick={() => { setShowForm(true); setEditId(null); setSelectedId(null); }}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] transition-all">
+            <Plus size={14} /> Add Category
+          </button>
         </div>
-      ) : (
-        categories.map(c => (
-          <div key={c.id} className="bg-[#1f2c34] border border-white/8 rounded-xl overflow-hidden">
-            {editId === c.id ? (
-              <div className="p-3">
-                <CategoryFormCard
-                  initial={{ name: c.name, description: c.description ?? '', image: toImage(c), inAgentContext: c.inAgentContext }}
-                  onSave={data => updateCategory(c.id, data)}
-                  onCancel={() => setEditId(null)}
-                  loading={saving}
-                />
-              </div>
-            ) : (
-              <div className="flex items-center gap-3 px-4 py-3">
-                <div className="w-12 h-12 rounded-lg overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+        <div className="flex-1 overflow-y-auto py-1">
+          {categories.length === 0 ? (
+            <div className="text-center py-16 px-4 text-white/20">
+              <Tags size={28} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No categories yet</p>
+            </div>
+          ) : categories.map(c => {
+            const prods = byCategory.get(c.id) ?? [];
+            const isSel = selectedId === c.id && !showForm && !editId;
+            return (
+              <button key={c.id}
+                onClick={() => { setSelectedId(c.id); setShowForm(false); setEditId(null); }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left border-l-2 transition-colors ${
+                  isSel ? 'bg-[#25D366]/10 border-[#25D366]' : 'border-transparent hover:bg-white/5'
+                }`}>
+                <div className="w-9 h-9 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
                   {imageSrc(toImage(c))
                     // eslint-disable-next-line @next/next/no-img-element
                     ? <img src={imageSrc(toImage(c))} alt="" className="w-full h-full object-cover" />
-                    : <Tags size={16} className="text-white/20" />}
+                    : <Tags size={15} className="text-white/20" />}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-white text-xs font-medium truncate">{c.name}</p>
-                    {c.inAgentContext && (
-                      <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full shrink-0 flex items-center gap-0.5">
-                        <Bot size={8} /> In agent
-                      </span>
-                    )}
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-xs font-medium truncate ${isSel ? 'text-white' : 'text-white/85'}`}>{c.name}</p>
+                    {c.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
                   </div>
-                  {c.description && <p className="text-white/30 text-[10px] truncate mt-0.5">{c.description}</p>}
+                  <p className="text-white/30 text-[10px] mt-0.5">{prods.length} product{prods.length !== 1 ? 's' : ''}</p>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => { setEditId(c.id); setShowForm(false); }} className="p-1.5 rounded-lg text-white/25 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
-                    <Pencil size={13} />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── RIGHT: detail / form ────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto">
+        {showForm ? (
+          <div className="max-w-2xl mx-auto p-6 space-y-4">
+            <h2 className="text-white font-semibold text-sm">New category</h2>
+            <CategoryFormCard onSave={addCategory} onCancel={() => setShowForm(false)} loading={saving} />
+          </div>
+        ) : editId && selected ? (
+          <div className="max-w-2xl mx-auto p-6 space-y-4">
+            <h2 className="text-white font-semibold text-sm">Edit “{selected.name}”</h2>
+            <CategoryFormCard
+              initial={{ name: selected.name, description: selected.description ?? '', image: toImage(selected), inAgentContext: selected.inAgentContext }}
+              onSave={data => updateCategory(selected.id, data)}
+              onCancel={() => setEditId(null)}
+              loading={saving}
+            />
+          </div>
+        ) : selected ? (
+          <div className="max-w-2xl mx-auto p-6 space-y-5">
+            {/* category preview */}
+            <div className="flex gap-4">
+              <div className="w-28 h-28 rounded-xl overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                {imageSrc(toImage(selected))
+                  // eslint-disable-next-line @next/next/no-img-element
+                  ? <img src={imageSrc(toImage(selected))} alt="" className="w-full h-full object-cover" />
+                  : <Tags size={28} className="text-white/20" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-white font-semibold text-base">{selected.name}</h2>
+                  {selected.inAgentContext && (
+                    <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><Bot size={8} /> In agent</span>
+                  )}
+                  <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full">{selectedProds.length} product{selectedProds.length !== 1 ? 's' : ''}</span>
+                </div>
+                {selected.description && <p className="text-white/50 text-xs leading-relaxed mt-1.5">{selected.description}</p>}
+                <div className="flex items-center gap-2 mt-3">
+                  <button onClick={() => setEditId(selected.id)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-white/15 bg-white/5 text-white/60 hover:text-[#25D366] hover:bg-[#25D366]/10 transition-all">
+                    <Pencil size={12} /> Edit
                   </button>
-                  <button onClick={() => deleteCategory(c.id)} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-all">
-                    <Trash2 size={13} />
+                  <button onClick={() => deleteCategory(selected.id)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-white/15 bg-white/5 text-white/60 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                    <Trash2 size={12} /> Delete
                   </button>
                 </div>
               </div>
-            )}
+            </div>
+
+            {/* products in this category */}
+            <div>
+              <p className="text-white/40 text-[10px] uppercase tracking-wider mb-2">Products in this category</p>
+              {selectedProds.length === 0 ? (
+                <p className="text-white/30 text-xs">No products in this category yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedProds.map(p => (
+                    <div key={p.id} className="flex gap-3 bg-[#111b21] border border-white/8 rounded-lg p-2.5">
+                      <div className="w-14 h-14 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                        {p.media?.[0]
+                          ? (p.media[0].type === 'video'
+                              ? <video src={productMediaSrc(p.media[0])} className="w-full h-full object-cover" muted />
+                              // eslint-disable-next-line @next/next/no-img-element
+                              : <img src={productMediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />)
+                          : <Package size={16} className="text-white/20" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-white/85 text-xs font-medium truncate">{p.name}</p>
+                          {p.priceRange && <span className="text-[#25D366]/80 text-[11px] shrink-0">{p.priceRange}</span>}
+                        </div>
+                        {p.description && <p className="text-white/35 text-[11px] mt-1 line-clamp-2 leading-relaxed">{p.description}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        ))
-      )}
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center text-center text-white/20 px-6">
+            <Tags size={30} className="mb-3 opacity-30" />
+            <p className="text-sm">Select a category to see its details &amp; products</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

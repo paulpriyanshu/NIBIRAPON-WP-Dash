@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { catalogProducts } from '@/db/schema';
 import { getInventoryPage, getAllInventory } from '@/lib/queries/inventory';
-import { cleanMedia, cleanVariantAttributes, categoryNameById } from '@/lib/inventory-write';
+import { cleanMedia, cleanVariantAttributes, cleanTags, categoryNameById } from '@/lib/inventory-write';
 
 export async function GET(req: NextRequest) {
   try {
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, media, inAgentContext, parentId, variantAttributes,
+      customInfo, contentId, tags, media, inAgentContext, parentId, variantAttributes,
     } = body;
 
     if (!name?.trim()) {
@@ -51,6 +51,8 @@ export async function POST(req: NextRequest) {
         fabric:            fabric      || null,
         occasions:         occasions   || null,
         customInfo:        customInfo  || null,
+        contentId:         contentId?.trim() || null,
+        tags:              cleanTags(tags),
         media:             cleanMedia(media),
         parentId:          parentId    || null,
         variantAttributes: cleanVariantAttributes(variantAttributes),

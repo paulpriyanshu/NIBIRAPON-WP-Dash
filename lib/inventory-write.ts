@@ -16,6 +16,22 @@ export function cleanMedia(media: unknown): ProductMedia[] {
     }));
 }
 
+/** Normalize tags: trimmed, de-duped (case-insensitive), non-empty. */
+export function cleanTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    const v = String(t ?? '').trim();
+    if (!v) continue;
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
 /** Keep only variant attributes with a non-empty label and value. */
 export function cleanVariantAttributes(attrs: unknown): VariantAttribute[] {
   if (!Array.isArray(attrs)) return [];

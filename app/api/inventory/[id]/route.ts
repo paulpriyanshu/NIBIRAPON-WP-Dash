@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { catalogProducts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { cleanMedia, cleanVariantAttributes, categoryNameById } from '@/lib/inventory-write';
+import { cleanMedia, cleanVariantAttributes, cleanTags, categoryNameById } from '@/lib/inventory-write';
 
 export async function PATCH(
   req: NextRequest,
@@ -13,13 +13,13 @@ export async function PATCH(
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, media, isActive, inAgentContext, featured, parentId, variantAttributes,
+      customInfo, contentId, tags, media, isActive, inAgentContext, featured, parentId, variantAttributes,
     } = body;
 
     // Toggling agent-context alone doesn't change product content, so keep the
     // embedding. Any change to a content/media field invalidates it for re-sync.
     const contentChanged = [
-      name, description, priceRange, categoryId, fabric, occasions, customInfo, media, variantAttributes,
+      name, description, priceRange, categoryId, fabric, occasions, customInfo, tags, media, variantAttributes,
     ].some(v => v !== undefined);
 
     // When the category changes, re-derive the denormalized `category` name.
@@ -35,6 +35,8 @@ export async function PATCH(
         ...(fabric            !== undefined && { fabric }),
         ...(occasions         !== undefined && { occasions }),
         ...(customInfo        !== undefined && { customInfo }),
+        ...(contentId         !== undefined && { contentId: contentId?.trim() || null }),
+        ...(tags              !== undefined && { tags: cleanTags(tags) }),
         ...(media             !== undefined && { media: cleanMedia(media) }),
         ...(parentId          !== undefined && { parentId: parentId || null }),
         ...(variantAttributes !== undefined && { variantAttributes: cleanVariantAttributes(variantAttributes) }),
