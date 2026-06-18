@@ -29,12 +29,15 @@ export interface FlowButton { index: number; text: string; }
 
 export interface CompiledFlow {
   nodesById: Record<string, FlowNode>;
-  // transitions[templateNodeId] = { buttons, default, delay }
+  // Each node's outgoing edges, classified by how they fire:
+  //  - buttons:    tap text → next node (via a Button Router / multi-path). Waits for a tap.
+  //  - immediates: direct sendable children, sent right away (fan-out) when the node is reached.
+  //  - delays:     via a Delay node, scheduled to fire after N seconds.
+  // A single node can have any mix (e.g. an immediate follow-up AND a button router).
   transitions: Record<string, {
     buttons: Record<string, string>;
-    default: string | null;
-    // Auto-advance after N seconds (template → Delay node → next template)
-    delay?: { seconds: number; nextId: string };
+    immediates: string[];
+    delays: { seconds: number; nextId: string }[];
   }>;
 }
 
@@ -209,18 +212,18 @@ export function compileFlow(flow: Flow): CompiledFlow {
   for (const node of flow.nodes ?? []) {
     if (!SENDABLE(node.type)) continue;
     const buttons = nodeReplyOptions(node);
-    const entry: CompiledFlow['transitions'][string] = { buttons: {}, default: null };
+    const entry: CompiledFlow['transitions'][string] = { buttons: {}, immediates: [], delays: [] };
 
     for (const oe of edges.filter(e => e.source === node.id)) {
       const target = nodesById[oe.target];
       if (!target) continue;
 
       if (target.type === 'delayNode') {
-        // node → Delay → next sendable: auto-advance after N seconds.
+        // node → Delay → next sendable: send the target after N seconds.
         const seconds = Math.max(0, Number(target.data?.seconds) || 0);
         const out = edges.find(e => e.source === target.id);
         const dest = out ? resolveToTemplate(out.target) : null;
-        if (dest) entry.delay = { seconds, nextId: dest };
+        if (dest) entry.delays.push({ seconds, nextId: dest });
       } else if (target.type === 'binaryDecisionNode') {
         // Button router fed by this node — map each option's btn-i edge.
         for (const b of buttons) {
@@ -237,10 +240,11 @@ export function compileFlow(flow: Flow): CompiledFlow {
           if (dest) entry.buttons[br.label] = dest;
         }
       } else if (SENDABLE(target.type)) {
-        entry.default = target.id;
+        // Direct edge to a sendable node → sent immediately (fan-out).
+        entry.immediates.push(target.id);
       } else if (target.type === 'conditionNode') {
         const dest = resolveToTemplate(target.id);
-        if (dest) entry.default = dest;
+        if (dest) entry.immediates.push(dest);
       }
     }
     transitions[node.id] = entry;
@@ -257,7 +261,11 @@ export function findRootNodes(flow: Flow): string[] {
     .map(n => n.id);
 }
 
-/** Given the current template and the button the customer tapped, find the next template node id. */
+/**
+ * The node a button tap leads to, via this node's Button Router. Returns null when
+ * the tapped text matches no wired button. (Immediate/delay children are auto-sent,
+ * never tap targets — so there is no "default" fallback here.)
+ */
 export function resolveNext(c: CompiledFlow, currentNodeId: string, buttonText: string): string | null {
   const entry = c.transitions[currentNodeId];
   if (!entry) return null;
@@ -266,19 +274,14 @@ export function resolveNext(c: CompiledFlow, currentNodeId: string, buttonText: 
   for (const [k, v] of Object.entries(entry.buttons)) {
     if (k.trim().toLowerCase() === lower) return v;
   }
-  return entry.default ?? null;
+  return null;
 }
 
 /** Whether a node has any onward transition (false ⇒ it's a flow endpoint). */
 export function hasOnward(c: CompiledFlow, nodeId: string): boolean {
   const e = c.transitions[nodeId];
   if (!e) return false;
-  return Object.keys(e.buttons).length > 0 || !!e.default || !!e.delay;
-}
-
-/** Delay-based auto-advance for a node, if any. */
-export function delayAfter(c: CompiledFlow, nodeId: string): { seconds: number; nextId: string } | null {
-  return c.transitions[nodeId]?.delay ?? null;
+  return Object.keys(e.buttons).length > 0 || e.immediates.length > 0 || e.delays.length > 0;
 }
 
 /* ── Tracking helpers ────────────────────────────────────────────────────────── */
@@ -309,7 +312,7 @@ export function orderedSendableNodes(flow: Flow, rootId: string): string[] {
     order.push(id);
     const e = c.transitions[id];
     if (!e) continue;
-    const nexts = [...Object.values(e.buttons), e.default, e.delay?.nextId]
+    const nexts = [...Object.values(e.buttons), ...e.immediates, ...e.delays.map(d => d.nextId)]
       .filter((n): n is string => !!n);
     for (const n of nexts) if (!seen.has(n)) queue.push(n);
   }

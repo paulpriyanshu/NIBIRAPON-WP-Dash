@@ -6,7 +6,7 @@ import { eq, and, inArray, count } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage, sendMediaMessage, uploadMedia } from '@/lib/whatsapp-api';
 import { getSendUrl, r2HasPublicBase } from '@/lib/inventory-media';
 import {
-  compileFlow, resolveNext, hasOnward, delayAfter,
+  compileFlow, resolveNext,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
   textNodeContent, textNodeLabel, textNodeMedia, isSendableNode,
   customNodeMessageId, nodeReplyOptions, findRootNodes, nodeShortLabel, orderedSendableNodes,
@@ -172,100 +172,141 @@ export interface FlowRun {
   startedAt: Date;
   updatedAt: Date;
   steps: { at: Date; button: string; toNode: string }[];
-  // Scheduled delay auto-advance (template → Delay node → next template)
+  // Open tap-wait points — every node currently showing reply buttons the customer
+  // can tap to branch. A run can wait on several at once (fan-out).
+  armed?: ArmedNode[];
+  // Scheduled delay continuations (Delay-node targets waiting to fire).
+  due?: DueStep[];
+  // Legacy single-pointer fields (pre-fan-out runs) — still read for in-flight runs.
   dueAt?: Date | null;
   dueNodeId?: string | null;
 }
 
-// Short delays run inline (setTimeout) for precise timing; longer ones are left
+/** A node currently armed for button taps, with its options and the message it was sent on. */
+interface ArmedNode { nodeId: string; buttons: FlowButton[]; msgId: string }
+/** A delayed continuation waiting to fire. */
+interface DueStep { at: Date; nodeId: string }
+
+// Short delays run inline (setTimeout) for precise timing; longer ones are handed
 // to the cron tick so we don't block the request for too long.
 const INLINE_DELAY_CAP_SEC = 45;
+const FANOUT_CAP = 50;            // max nodes auto-sent in one fan-out (cycle/explosion guard)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-/**
- * The next step the flow takes on its own, without a customer tap:
- *  - a Delay node after a template → wait N seconds, then send the target
- *  - a text node → it sends, then flows straight on to its next node (0 wait)
- * Returns null when the flow should wait for a button tap (or has ended).
- */
-function nextAutoStep(compiled: CompiledFlow, nodeId: string): { seconds: number; nextId: string } | null {
-  const d = delayAfter(compiled, nodeId);
-  if (d) return d;
-  const node = compiled.nodesById[nodeId];
-  // Text nodes, and custom nodes with NO tappable options, fire then continue
-  // straight to the next node. A custom node WITH options waits for a tap.
-  const autoContinues = node?.type === 'textNode'
-    || (node?.type === 'customNode' && nodeReplyOptions(node).length === 0);
-  if (autoContinues) {
-    const def = compiled.transitions[nodeId]?.default;
-    if (def) return { seconds: 0, nextId: def };
+/** Accumulates the result of a fan-out: messages sent, new tap-waits, scheduled delays. */
+interface FanCtx {
+  flow: Flow;
+  compiled: CompiledFlow;
+  phone: string;
+  conversationId: string | null;
+  bizPhone: string;
+  armed: ArmedNode[];                 // open tap-waits after this fan-out
+  due: DueStep[];                     // scheduled delays after this fan-out
+  steps: { at: Date; button: string; toNode: string }[];
+  lastNodeId: string;
+  lastMsgId: string;
+  visited: Set<string>;
+  sends: number;
+}
+
+/** Send one node, persist it to the inbox, and record a traversal step. */
+async function deliverNode(ctx: FanCtx, nodeId: string, label: string): Promise<string | null> {
+  let sent: SentNode | null;
+  try {
+    sent = await sendFlowNode(ctx.flow, nodeId, ctx.phone);
+  } catch (e) {
+    console.error(`[flow] send failed for node ${nodeId}:`, e instanceof Error ? e.message : e);
+    return null;
   }
-  return null;
+  if (!sent) return null;
+  const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  await persistFlowMessage({
+    msgId, conversationId: ctx.conversationId, bizPhone: ctx.bizPhone, phone: ctx.phone,
+    status: sent.msgId ? 'sent' : 'failed',
+    kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text',
+    templateName: sent.label, text: sent.text, media: sent.media,
+  });
+  ctx.steps.push({ at: new Date(), button: label, toNode: nodeId });
+  ctx.lastNodeId = nodeId;
+  ctx.lastMsgId = msgId;
+  console.log(`[flow] sent "${sent.label}" (${label}) to ${ctx.phone} waId=${sent.msgId ?? 'none'}`);
+  return msgId;
 }
 
 /**
- * After a node was sent, run the flow's automatic steps: Delay-node waits and
- * text-message nodes (which fire and immediately continue). Chains until it
- * reaches a template that waits for a tap, a long delay (handed to cron), or the
- * end. Aborts if the customer advances the run (taps a button) during a wait.
+ * Process a node's outgoing edges after it was delivered (msgId known):
+ *  - if it has a Button Router → arm it for taps (waits),
+ *  - immediate children → send right away (fan-out, depth-first),
+ *  - delay children → short ones inline, long ones scheduled for the tick.
+ * All three can coexist on one node.
  */
-async function runAutoChain(args: {
-  flow: Flow; compiled: CompiledFlow; runId: ObjectId; phone: string;
-  conversationId: string | null; bizPhone: string; fromNodeId: string;
-}): Promise<void> {
-  const runs = await runsColl();
-  let current = args.fromNodeId;
+async function spread(ctx: FanCtx, nodeId: string, msgId: string): Promise<void> {
+  const entry = ctx.compiled.transitions[nodeId];
+  if (!entry) return;
 
-  for (let guard = 0; guard < 50; guard++) {
-    const step = nextAutoStep(args.compiled, current);
-    if (!step) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
-
-    if (step.seconds > INLINE_DELAY_CAP_SEC) {
-      // Too long to hold the request — hand off to the cron tick.
-      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: new Date(Date.now() + step.seconds * 1000), dueNodeId: step.nextId } });
-      return;
-    }
-
-    if (step.seconds > 0) await sleep(step.seconds * 1000);
-
-    // If the customer moved the run on (tapped a button) while we waited, stop.
-    const fresh = await runs.findOne({ _id: args.runId });
-    if (!fresh || fresh.status !== 'active' || fresh.currentNodeId !== current) return;
-
-    let sent: SentNode | null;
-    try {
-      sent = await sendFlowNode(args.flow, step.nextId, args.phone);
-      console.log(`[flow] auto-step (${step.seconds}s) fired → sent "${sent?.label ?? '?'}" to ${args.phone} waId=${sent?.msgId ?? 'none'}`);
-    } catch (e) {
-      console.error(`[flow] auto-step send failed:`, e instanceof Error ? e.message : e);
-      await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } });
-      return;
-    }
-    if (!sent) { await runs.updateOne({ _id: args.runId }, { $set: { dueAt: null, dueNodeId: null } }); return; }
-
-    const node = args.compiled.nodesById[step.nextId];
-    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    await persistFlowMessage({
-      msgId, conversationId: args.conversationId, bizPhone: args.bizPhone, phone: args.phone,
-      status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
-    });
-
-    const terminal = !hasOnward(args.compiled, step.nextId);
-    await runs.updateOne(
-      { _id: args.runId },
-      {
-        $set: {
-          currentNodeId: step.nextId, currentButtons: nodeReplyOptions(node),
-          lastTemplateMsgId: msgId, status: terminal ? 'completed' : 'active',
-          updatedAt: new Date(), dueAt: null, dueNodeId: null,
-        },
-        $push: { steps: { at: new Date(), button: step.seconds > 0 ? '(delay)' : '(message)', toNode: step.nextId } },
-      },
-    );
-    if (terminal) return;
-    current = step.nextId;
+  const opts = nodeReplyOptions(ctx.compiled.nodesById[nodeId]);
+  if (Object.keys(entry.buttons).length > 0 && opts.length > 0) {
+    ctx.armed.push({ nodeId, buttons: opts, msgId });
   }
+
+  for (const next of entry.immediates) {
+    await enter(ctx, next, '(message)');
+  }
+
+  for (const d of entry.delays) {
+    if (d.seconds > INLINE_DELAY_CAP_SEC) {
+      ctx.due.push({ at: new Date(Date.now() + d.seconds * 1000), nodeId: d.nextId });
+    } else {
+      if (d.seconds > 0) await sleep(d.seconds * 1000);
+      await enter(ctx, d.nextId, '(delay)');
+    }
+  }
+}
+
+/** Deliver a node then fan out from it (cycle- and explosion-guarded). */
+async function enter(ctx: FanCtx, nodeId: string, label: string): Promise<void> {
+  if (ctx.visited.has(nodeId) || ctx.sends >= FANOUT_CAP) return;
+  ctx.visited.add(nodeId);
+  ctx.sends++;
+  const msgId = await deliverNode(ctx, nodeId, label);
+  if (!msgId) return;
+  await spread(ctx, nodeId, msgId);
+}
+
+/** Persist a fan-out's result onto the run. Completes the run when nothing is left
+ *  to wait on (no armed taps, no scheduled delays). */
+async function persistFan(runId: ObjectId, ctx: FanCtx): Promise<void> {
+  const runs = await runsColl();
+  const terminal = ctx.armed.length === 0 && ctx.due.length === 0;
+  await runs.updateOne(
+    { _id: runId },
+    {
+      $set: {
+        armed: ctx.armed,
+        due: ctx.due,
+        currentNodeId: ctx.lastNodeId,
+        currentButtons: ctx.armed.flatMap(a => a.buttons),
+        lastTemplateMsgId: ctx.lastMsgId,
+        status: terminal ? 'completed' : 'active',
+        updatedAt: new Date(),
+        dueAt: null, dueNodeId: null,
+      },
+      ...(ctx.steps.length ? { $push: { steps: { $each: ctx.steps } } } : {}),
+    },
+  );
+}
+
+/** Open tap-waits for a run — new `armed` array, or derived from the legacy pointer. */
+function normalizeArmed(run: FlowRun): ArmedNode[] {
+  if (Array.isArray(run.armed)) return run.armed;
+  if (run.currentButtons?.length) return [{ nodeId: run.currentNodeId, buttons: run.currentButtons, msgId: run.lastTemplateMsgId ?? '' }];
+  return [];
+}
+/** Scheduled delays for a run — new `due` array, or derived from the legacy fields. */
+function normalizeDue(run: FlowRun): DueStep[] {
+  if (Array.isArray(run.due)) return run.due;
+  if (run.dueAt && run.dueNodeId) return [{ at: run.dueAt, nodeId: run.dueNodeId }];
+  return [];
 }
 
 /* ── Template lock (templates used by LIVE flows) ────────────────────────────── */
@@ -393,16 +434,22 @@ export async function startRun(opts: {
     startedAt:         now,
     updatedAt:         now,
     steps:             [],
+    armed:             [],
+    due:               [],
     dueAt:             null,
     dueNodeId:         null,
   } satisfies Omit<FlowRun, '_id'>);
   console.log(`[flow] run started phone=${opts.phone} flow=${opts.flow._id} root=${opts.rootNodeId} rootMsg=${msgId} buttons=${JSON.stringify(nodeReplyOptions(rootNode))}`);
 
-  // Honour any auto-steps right after the root (Delay waits / text messages).
-  await runAutoChain({
-    flow: opts.flow, compiled, runId: ins.insertedId, phone: opts.phone,
-    conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: opts.rootNodeId,
-  });
+  // The root is already sent — fan out from it: arm its buttons (if any), send any
+  // immediate follow-ups, and schedule any delays.
+  const ctx: FanCtx = {
+    flow: opts.flow, compiled, phone: opts.phone, conversationId: opts.conversationId, bizPhone: opts.bizPhone,
+    armed: [], due: [], steps: [], lastNodeId: opts.rootNodeId, lastMsgId: msgId,
+    visited: new Set([opts.rootNodeId]), sends: 1,
+  };
+  await spread(ctx, opts.rootNodeId, msgId);
+  await persistFan(ins.insertedId, ctx);
 
   return { ok: true };
 }
@@ -443,53 +490,26 @@ export async function advanceRunOnButton(opts: {
     }
 
     const compiled = compileFlow(flow as unknown as Flow);
-    const nextId = resolveNext(compiled, run.currentNodeId, opts.buttonText);
-    console.log(`[flow] try run node=${run.currentNodeId} button="${opts.buttonText}" → next=${nextId ?? 'none'} (buttons: ${JSON.stringify(compiled.transitions[run.currentNodeId]?.buttons ?? {})})`);
-    if (!nextId) continue;
+    const armed = normalizeArmed(run as unknown as FlowRun);
 
-    const nextNode = compiled.nodesById[nextId];
+    // Find an armed tap-wait whose router maps this button. Prefer the one whose
+    // message the customer actually replied to (contextMsgId).
+    let match = armed.find(a => (!opts.contextMsgId || a.msgId === opts.contextMsgId) && !!resolveNext(compiled, a.nodeId, opts.buttonText));
+    if (!match) match = armed.find(a => !!resolveNext(compiled, a.nodeId, opts.buttonText));
+    const nextId = match ? resolveNext(compiled, match.nodeId, opts.buttonText) : null;
+    console.log(`[flow] tap "${opts.buttonText}" run=${run._id} armed=${armed.length} → match=${match?.nodeId ?? 'none'} next=${nextId ?? 'none'}`);
+    if (!match || !nextId) continue;
 
-    let sent: SentNode | null;
-    try {
-      sent = await sendFlowNode(flow as unknown as Flow, nextId, opts.phone);
-      console.log(`[flow] sent next "${sent?.label ?? '?'}" → waId=${sent?.msgId ?? 'none'}`);
-    } catch (e) {
-      console.error(`[flow] advance send failed:`, e instanceof Error ? e.message : e);
-      return false;
-    }
-    if (!sent) continue;
-
-    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    await persistFlowMessage({
-      msgId, conversationId: opts.conversationId, bizPhone: opts.bizPhone, phone: opts.phone,
-      status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
-    });
-
-    const terminal = !hasOnward(compiled, nextId);
-    await runs.updateOne(
-      { _id: run._id },
-      {
-        $set: {
-          currentNodeId:     nextId,
-          currentButtons:    nodeReplyOptions(nextNode),
-          lastTemplateMsgId: msgId,
-          status:            terminal ? 'completed' : 'active',
-          updatedAt:         new Date(),
-          dueAt:             null,
-          dueNodeId:         null,
-        },
-        $push: { steps: { at: new Date(), button: opts.buttonText, toNode: nextId } },
-      },
-    );
-
-    // Continue any automatic steps after this node (Delay waits / text messages).
-    if (!terminal) {
-      await runAutoChain({
-        flow: flow as unknown as Flow, compiled, runId: run._id, phone: opts.phone,
-        conversationId: opts.conversationId, bizPhone: opts.bizPhone, fromNodeId: nextId,
-      });
-    }
+    // The matched wait is consumed; other open waits (and scheduled delays) survive.
+    const ctx: FanCtx = {
+      flow: flow as unknown as Flow, compiled, phone: opts.phone,
+      conversationId: opts.conversationId, bizPhone: opts.bizPhone,
+      armed: armed.filter(a => a !== match), due: normalizeDue(run as unknown as FlowRun),
+      steps: [], lastNodeId: run.currentNodeId, lastMsgId: run.lastTemplateMsgId ?? '',
+      visited: new Set(), sends: 0,
+    };
+    await enter(ctx, nextId, opts.buttonText);   // delivers the branch target + fans out
+    await persistFan(run._id, ctx);
     return true;
   }
 
@@ -504,67 +524,37 @@ const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 export async function runDueSteps(now = new Date()): Promise<{ fired: number }> {
   const runs = await runsColl();
   const flows = await flowsColl();
-  const due = await runs.find({ status: 'active', dueAt: { $ne: null, $lte: now } }).limit(50).toArray();
+  // Runs with a delay due now — new `due` array or the legacy single field.
+  const dueRuns = await runs.find({
+    status: 'active',
+    $or: [{ 'due.at': { $lte: now } }, { dueAt: { $ne: null, $lte: now } }],
+  }).limit(50).toArray();
   let fired = 0;
 
-  for (const run of due) {
-    const nodeId = run.dueNodeId;
-    if (!nodeId) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
+  for (const run of dueRuns) {
+    const dueList = normalizeDue(run as unknown as FlowRun);
+    const fire = dueList.filter(d => d.at <= now);
+    const remaining = dueList.filter(d => d.at > now);
+    if (!fire.length) continue;
 
     let flow;
     try { flow = await flows.findOne({ _id: new ObjectId(run.flowId) }); } catch { continue; }
     if (!flow || flow.status !== 'live') {
-      await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } });
+      await runs.updateOne({ _id: run._id }, { $set: { due: remaining, dueAt: null, dueNodeId: null } });
       continue;
     }
 
     const compiled = compileFlow(flow as unknown as Flow);
-    const node = compiled.nodesById[nodeId];
-
-    let sent: SentNode | null;
-    try {
-      sent = await sendFlowNode(flow as unknown as Flow, nodeId, run.phone);
-      console.log(`[flow] delay fired → sent "${sent?.label ?? '?'}" to ${run.phone} waId=${sent?.msgId ?? 'none'}`);
-    } catch (e) {
-      console.error(`[flow] delay send failed:`, e instanceof Error ? e.message : e);
-      // Clear the schedule so we don't hot-loop on a broken node.
-      await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } });
-      continue;
-    }
-    if (!sent) { await runs.updateOne({ _id: run._id }, { $set: { dueAt: null, dueNodeId: null } }); continue; }
-
-    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    await persistFlowMessage({
-      msgId, conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, phone: run.phone,
-      status: sent.msgId ? 'sent' : 'failed',
-      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text', templateName: sent.label, text: sent.text, media: sent.media,
-    });
-
-    const terminal = !hasOnward(compiled, nodeId);
-    await runs.updateOne(
-      { _id: run._id },
-      {
-        $set: {
-          currentNodeId:     nodeId,
-          currentButtons:    nodeReplyOptions(node),
-          lastTemplateMsgId: msgId,
-          status:            terminal ? 'completed' : 'active',
-          updatedAt:         new Date(),
-          dueAt:             null,
-          dueNodeId:         null,
-        },
-        $push: { steps: { at: new Date(), button: '(delay)', toNode: nodeId } },
-      },
-    );
-    fired++;
-
-    // Continue any further automatic steps (chained delays / text messages).
-    if (!terminal) {
-      await runAutoChain({
-        flow: flow as unknown as Flow, compiled, runId: run._id, phone: run.phone,
-        conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID, fromNodeId: nodeId,
-      });
-    }
+    const ctx: FanCtx = {
+      flow: flow as unknown as Flow, compiled, phone: run.phone,
+      conversationId: run.conversationId, bizPhone: PHONE_NUMBER_ID,
+      armed: normalizeArmed(run as unknown as FlowRun), due: remaining,
+      steps: [], lastNodeId: run.currentNodeId, lastMsgId: run.lastTemplateMsgId ?? '',
+      visited: new Set(), sends: 0,
+    };
+    for (const d of fire) await enter(ctx, d.nodeId, '(delay)');
+    await persistFan(run._id, ctx);
+    fired += fire.length;
   }
 
   return { fired };
