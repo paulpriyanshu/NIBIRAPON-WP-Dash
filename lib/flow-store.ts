@@ -136,8 +136,15 @@ async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<Sen
 
   const info = templateSendInfo(node);
   if (!info) return null;
-  const msgId = await sendNodeTemplate(flow, nodeId, to);
-  return [{ msgId, label: info.name, isTemplate: true }];
+  try {
+    const msgId = await sendNodeTemplate(flow, nodeId, to);
+    return [{ msgId, label: info.name, isTemplate: true }];
+  } catch (e) {
+    // Don't let a template send error halt the rest of the flow — record it and continue.
+    const reason = e instanceof Error ? e.message : 'send failed';
+    console.error(`[flow] template send failed for node ${nodeId} ("${info.name}"):`, reason);
+    return [{ label: info.name, isTemplate: true, text: `⚠ template not sent — ${reason}` }];
+  }
 }
 
 const DB    = 'nibiraponcollections';
@@ -275,8 +282,10 @@ async function enter(ctx: FanCtx, nodeId: string, label: string): Promise<void> 
   ctx.visited.add(nodeId);
   ctx.sends++;
   const msgId = await deliverNode(ctx, nodeId, label);
-  if (!msgId) return;
-  await spread(ctx, nodeId, msgId);
+  // Always fan out to the children, even if THIS node failed to send — a node wired
+  // after another must always be reached. (A failed node is logged/persisted; it
+  // must never silently halt the rest of the flow.)
+  await spread(ctx, nodeId, msgId ?? `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
 }
 
 /** Persist a fan-out's result onto the run. Completes the run when nothing is left
