@@ -12,6 +12,10 @@ import {
 import type { TemplateMessage, TemplateMessageConfig } from '@/lib/templates';
 
 interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; }
+interface PickMedia { type: 'image' | 'video'; assetId?: string; url?: string }
+/** A product offered in the MPM/catalog picker — mapped to WhatsApp by its contentId. */
+interface PickProduct { id: string; name: string; contentId: string | null; priceRange: string | null; media: PickMedia[] }
+function pickMediaSrc(m?: PickMedia): string { return m ? (m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? '')) : ''; }
 
 interface Flow extends EngineFlow {
   _id: string;
@@ -171,7 +175,77 @@ function HeaderMediaField({ spec, v, patch, media }: {
   );
 }
 
-function FlowCard({ flow, onChanged, savedMessages, media }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[] }) {
+/** Pick the thumbnail product (single) — stores the product's Content ID. */
+function ProductThumbSelect({ products, value, onChange }: { products: PickProduct[]; value: string; onChange: (contentId: string) => void }) {
+  const usable = products.filter(p => p.contentId);
+  return (
+    <div>
+      <select value={value} onChange={e => onChange(e.target.value)} className={inputCls}>
+        <option value="">— pick the thumbnail product —</option>
+        {usable.map(p => <option key={p.id} value={p.contentId!}>{p.name}{p.priceRange ? ` · ${p.priceRange}` : ''}</option>)}
+        {value && !usable.some(p => p.contentId === value) && <option value={value}>{value} (current)</option>}
+      </select>
+      {usable.length === 0 && <p className="text-amber-400/70 text-[10px] mt-1">No products have a Content ID yet — add one per product in Inventory to pick them here.</p>}
+    </div>
+  );
+}
+
+/** Pick the MPM products (multi) — stores their Content IDs as a comma list. */
+function ProductMultiSelect({ products, value, onChange }: { products: PickProduct[]; value: string; onChange: (csv: string) => void }) {
+  const [q, setQ] = useState('');
+  const usable = products.filter(p => p.contentId);
+  const selectedIds = value.split(',').map(s => s.trim()).filter(Boolean);
+  const toggle = (cid: string) => {
+    const set = new Set(selectedIds);
+    if (set.has(cid)) set.delete(cid); else set.add(cid);
+    onChange([...set].join(','));
+  };
+  const ql = q.toLowerCase();
+  const filtered = usable.filter(p => p.name.toLowerCase().includes(ql) || (p.contentId ?? '').toLowerCase().includes(ql));
+  return (
+    <div className="space-y-1.5">
+      {selectedIds.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {selectedIds.map(cid => {
+            const p = usable.find(x => x.contentId === cid);
+            return (
+              <span key={cid} className="flex items-center gap-1 text-[10px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full">
+                {p?.name ?? cid}
+                <button onClick={() => toggle(cid)} className="hover:text-red-400"><X size={9} /></button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search products to add…" className={inputCls} />
+      {usable.length === 0 ? (
+        <p className="text-amber-400/70 text-[10px]">No products have a Content ID yet — add one per product in Inventory to pick them here.</p>
+      ) : (
+        <div className="max-h-36 overflow-y-auto bg-[#0b141a] border border-white/8 rounded-lg divide-y divide-white/5">
+          {filtered.map(p => {
+            const on = selectedIds.includes(p.contentId!);
+            return (
+              <button key={p.id} onClick={() => toggle(p.contentId!)}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-colors ${on ? 'bg-[#25D366]/10' : 'hover:bg-white/5'}`}>
+                <input type="checkbox" readOnly checked={on} className="accent-[#25D366] shrink-0" />
+                <div className="w-7 h-7 rounded overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
+                  {p.media?.[0]
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img src={pickMediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />
+                    : null}
+                </div>
+                <span className="flex-1 min-w-0 text-white/75 text-[10px] truncate">{p.name}</span>
+                {p.priceRange && <span className="text-white/35 text-[9px] shrink-0">{p.priceRange}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FlowCard({ flow, onChanged, savedMessages, media, products }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[]; products: PickProduct[] }) {
   const roots = findRootNodes(flow);
   const specs = flowParamSpecs(flow);
   const isLive = flow.status === 'live';
@@ -472,13 +546,19 @@ function FlowCard({ flow, onChanged, savedMessages, media }: { flow: Flow; onCha
                         patch={fn => patch(s.nodeId, fn)} />
                     )}
                     {(s.isMPM || s.isCatalog) && (
-                      <input value={v.thumbnailProductRetailerId ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, thumbnailProductRetailerId: e.target.value }))}
-                        placeholder="Thumbnail product retailer ID" className={inputCls} />
+                      <div>
+                        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Thumbnail product</label>
+                        <ProductThumbSelect products={products} value={v.thumbnailProductRetailerId ?? ''}
+                          onChange={cid => patch(s.nodeId, p => ({ ...p, thumbnailProductRetailerId: cid }))} />
+                      </div>
                     )}
                     {s.isMPM && (
                       <>
-                        <input value={v.mpmSections?.[0]?.productIds ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, mpmSections: [{ title: p.mpmSections?.[0]?.title ?? '', productIds: e.target.value }] }))}
-                          placeholder="Product IDs (comma separated) — e.g. tissue01, tissue02" className={inputCls} />
+                        <div>
+                          <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Products to show</label>
+                          <ProductMultiSelect products={products} value={v.mpmSections?.[0]?.productIds ?? ''}
+                            onChange={csv => patch(s.nodeId, p => ({ ...p, mpmSections: [{ title: p.mpmSections?.[0]?.title ?? '', productIds: csv }] }))} />
+                        </div>
                         <input value={v.mpmSections?.[0]?.title ?? ''} onChange={e => patch(s.nodeId, p => ({ ...p, mpmSections: [{ title: e.target.value, productIds: p.mpmSections?.[0]?.productIds ?? '' }] }))}
                           placeholder="Section title (optional) — e.g. New Collection" className={inputCls} />
                       </>
@@ -509,6 +589,7 @@ export default function ActiveFlowsPanel() {
   const [loading, setLoading] = useState(true);
   const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [products, setProducts] = useState<PickProduct[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -520,6 +601,9 @@ export default function ActiveFlowsPanel() {
   useEffect(() => {
     fetch('/api/template-messages').then(r => r.ok ? r.json() : []).then(setSavedMessages).catch(() => {});
     fetch('/api/media').then(r => r.ok ? r.json() : []).then(setMedia).catch(() => {});
+    fetch('/api/inventory').then(r => r.ok ? r.json() : []).then((rows: PickProduct[]) =>
+      setProducts(rows.map(p => ({ id: p.id, name: p.name, contentId: p.contentId, priceRange: p.priceRange, media: p.media ?? [] })))
+    ).catch(() => {});
   }, []);
 
   const liveCount = flows.filter(f => f.status === 'live').length;
@@ -559,7 +643,7 @@ export default function ActiveFlowsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} media={media} />)}
+            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} media={media} products={products} />)}
           </div>
         )}
       </div>
