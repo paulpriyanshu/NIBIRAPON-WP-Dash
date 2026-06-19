@@ -89,8 +89,11 @@ export async function getAllMedia(): Promise<MediaItem[]> {
     const flows = await coll.find({}).toArray();
     for (const f of flows) {
       for (const n of ((f.nodes ?? []) as any[])) {
-        const md = n?.data?.media;
-        if (n?.type === 'textNode' && md && (md.assetId || md.url)) {
+        if (n?.type !== 'textNode') continue;
+        // New multi-media nodes use `mediaList`; older ones a single `media`.
+        const list: any[] = Array.isArray(n?.data?.mediaList) ? n.data.mediaList : (n?.data?.media ? [n.data.media] : []);
+        for (const md of list) {
+          if (!md || (!md.assetId && !md.url)) continue;
           add({ type: md.type === 'video' ? 'video' : 'image', assetId: md.assetId, url: md.url },
               { kind: 'flow', label: `${f.name} · ${n?.data?.name || 'Message'}`, href: '/flow' });
         }

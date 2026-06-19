@@ -8,9 +8,9 @@ import { getSendUrl, r2HasPublicBase } from '@/lib/inventory-media';
 import {
   compileFlow, resolveNext,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
-  textNodeContent, textNodeLabel, textNodeMedia, isSendableNode,
+  textNodeContent, textNodeLabel, textNodeMediaList, isSendableNode,
   customNodeMessageId, nodeReplyOptions, findRootNodes, nodeShortLabel, orderedSendableNodes,
-  type Flow, type FlowButton, type FlowNode, type CompiledFlow,
+  type Flow, type FlowButton, type FlowNode, type FlowMedia, type CompiledFlow,
 } from '@/lib/flow-engine';
 import { configToSendPayload } from '@/lib/templates';
 import { getCustomMessage } from '@/lib/custom-message-store';
@@ -50,93 +50,94 @@ interface SentNode {
   interactive?: boolean;
 }
 
+/** Send a single photo/video over WhatsApp (handles signed-video upload-by-id). */
+async function sendFlowMedia(to: string, media: FlowMedia, caption: string | undefined, label: string): Promise<SentNode> {
+  const sendUrl = media.assetId ? await getSendUrl(media.assetId) : media.url;
+  if (!sendUrl) { console.warn(`[flow] media ("${label}") has no sendable URL — skipping`); return { label, isTemplate: false }; }
+  const displayUrl = media.assetId ? `/api/inventory/media/${media.assetId}` : (media.url ?? null);
+  const mime = media.mimeType || (media.type === 'video' ? 'video/mp4' : 'image/jpeg');
+  // A "clean" URL is public/unsigned (custom domain / r2.dev / pasted) — WhatsApp's
+  // video fetcher accepts those by link but rejects signed presigned URLs, which
+  // therefore need the upload-to-id path.
+  const cleanUrl = !!media.url || (!!media.assetId && r2HasPublicBase());
+  try {
+    let mediaId: string | undefined;
+    if (media.type === 'video' && !cleanUrl) {
+      const resp = await fetch(sendUrl);
+      if (!resp.ok) throw new Error(`couldn't fetch the stored video (${resp.status})`);
+      const up = await uploadMedia(await resp.arrayBuffer(), mime);
+      if (up?.id) mediaId = up.id;
+      else throw new Error(up?.error?.message || 'WhatsApp rejected the video — it must be MP4 (H.264 video + AAC audio), ≤16 MB');
+    }
+    const res = mediaId
+      ? await sendMediaMessage({ to, type: media.type, mediaId, caption })
+      : await sendMediaMessage({ to, type: media.type, mediaUrl: sendUrl, caption });
+    console.log(`[flow] ${media.type} sent ("${label}") waId=${res?.messages?.[0]?.id ?? 'none'}`);
+    return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text: caption, media: { type: media.type, displayUrl, caption } };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : 'send failed';
+    console.error(`[flow] media send failed ("${label}"):`, reason);
+    return { label, isTemplate: false, text: `⚠ ${media.type} not sent — ${reason}` };
+  }
+}
+
 /**
- * Send whatever a flow node represents — a WhatsApp template or a custom text
- * message — and return its wamid + a label. Returns null for non-sendable nodes.
+ * Send whatever a flow node represents — a WhatsApp template, a custom message, or
+ * a message node (which may carry several photos/videos sent serially). Returns one
+ * SentNode per WhatsApp message produced, or null for a non-sendable node.
  */
-async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<SentNode | null> {
+async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<SentNode[] | null> {
   const node = flow.nodes.find(n => n.id === nodeId) as FlowNode | undefined;
   if (!isSendableNode(node)) return null;
 
   if (node!.type === 'textNode') {
     const text  = (textNodeContent(node) ?? '').trim();
-    const media = textNodeMedia(node);
+    const mediaList = textNodeMediaList(node);
     const label = textNodeLabel(node);
+    const noCaption = !!(node!.data as { noCaption?: boolean }).noCaption;
 
-    // Message node with a photo/video: send it as a media message, using the
-    // typed text as its caption (so "media + message" is one WhatsApp message).
-    if (media) {
-      const sendUrl = media.assetId ? await getSendUrl(media.assetId) : media.url;
-      if (!sendUrl) { console.warn(`[flow] media node ${nodeId} ("${label}") has no sendable URL — skipping`); return { label, isTemplate: false }; }
-      // When the node opts to send media standalone, drop the caption entirely.
-      const noCaption = !!(node!.data as { noCaption?: boolean }).noCaption;
-      const caption = noCaption ? undefined : (text || media.caption || undefined);
-      const displayUrl = media.assetId ? `/api/inventory/media/${media.assetId}` : (media.url ?? null);
-      const mime = media.mimeType || (media.type === 'video' ? 'video/mp4' : 'image/jpeg');
-
-      // A "clean" URL is a public, unsigned link (custom domain / r2.dev, or a
-      // pasted URL). WhatsApp's video fetcher accepts those by `link` but rejects
-      // signed presigned URLs — so only those need the upload-to-id path.
-      const cleanUrl = !!media.url || (!!media.assetId && r2HasPublicBase());
-
-      try {
-        // Video over a presigned (signed) URL → upload the bytes to WhatsApp for a
-        // media_id and send by id (validates once, clear error). Clean public URLs
-        // and all images use the simpler, proven link method.
-        let mediaId: string | undefined;
-        if (media.type === 'video' && !cleanUrl) {
-          const resp = await fetch(sendUrl);
-          if (!resp.ok) throw new Error(`couldn't fetch the stored video (${resp.status})`);
-          const up = await uploadMedia(await resp.arrayBuffer(), mime);
-          if (up?.id) mediaId = up.id;
-          else throw new Error(up?.error?.message || 'WhatsApp rejected the video — it must be MP4 (H.264 video + AAC audio), ≤16 MB');
-        }
-
-        const res = mediaId
-          ? await sendMediaMessage({ to, type: media.type, mediaId, caption })
-          : await sendMediaMessage({ to, type: media.type, mediaUrl: sendUrl, caption });
-        console.log(`[flow] ${media.type} sent for node ${nodeId} waId=${res?.messages?.[0]?.id ?? 'none'}`);
-        return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text: caption, media: { type: media.type, displayUrl, caption } };
-      } catch (e) {
-        // Don't halt the whole flow — log the reason and record a failed message
-        // in the inbox so the admin can see exactly why the media didn't send.
-        const reason = e instanceof Error ? e.message : 'send failed';
-        console.error(`[flow] media send failed for node ${nodeId} ("${label}"):`, reason);
-        return { label, isTemplate: false, text: `⚠ ${media.type} not sent — ${reason}` };
+    // Message node with photos/videos: send each in order. The typed text is the
+    // caption of the FIRST media (unless "send on its own"); the rest go uncaptioned.
+    if (mediaList.length > 0) {
+      const out: SentNode[] = [];
+      for (let i = 0; i < mediaList.length; i++) {
+        const caption = i === 0 && !noCaption ? (text || mediaList[i].caption || undefined) : undefined;
+        out.push(await sendFlowMedia(to, mediaList[i], caption, label));
       }
+      return out;
     }
 
-    if (!text) { console.warn(`[flow] text node ${nodeId} ("${label}") is empty — skipping send`); return { label, isTemplate: false, text: '' }; }
+    if (!text) { console.warn(`[flow] text node ${nodeId} ("${label}") is empty — skipping send`); return [{ label, isTemplate: false, text: '' }]; }
     const res = await sendTextMessage({ to, text });
-    return { msgId: res?.messages?.[0]?.id, label, isTemplate: false, text };
+    return [{ msgId: res?.messages?.[0]?.id, label, isTemplate: false, text }];
   }
 
   // Custom (in-session) message node — text / media / reply-buttons / option list.
   if (node!.type === 'customNode') {
     const id = customNodeMessageId(node);
     const label = (node!.data as { label?: string } | undefined)?.label || 'Custom message';
-    if (!id) { console.warn(`[flow] custom node ${nodeId} has no message selected`); return { label, isTemplate: false }; }
+    if (!id) { console.warn(`[flow] custom node ${nodeId} has no message selected`); return [{ label, isTemplate: false }]; }
     const m = await getCustomMessage(id);
-    if (!m) { console.warn(`[flow] custom message ${id} not found`); return { label, isTemplate: false, text: '⚠ custom message not found' }; }
+    if (!m) { console.warn(`[flow] custom message ${id} not found`); return [{ label, isTemplate: false, text: '⚠ custom message not found' }]; }
     console.log(`[flow] sending custom message "${m.name}" (${m.type}) id=${id} → ${to}`);
     try {
       const r = await sendCustomMessage(to, m);
       console.log(`[flow] ✓ custom message "${m.name}" sent waId=${r.msgId ?? 'none'}`);
       if (r.recordType === 'image' || r.recordType === 'video') {
-        return { msgId: r.msgId, label, isTemplate: false, text: r.text, media: { type: r.recordType, displayUrl: r.mediaUrl ?? null, caption: m.caption } };
+        return [{ msgId: r.msgId, label, isTemplate: false, text: r.text, media: { type: r.recordType, displayUrl: r.mediaUrl ?? null, caption: m.caption } }];
       }
-      return { msgId: r.msgId, label, isTemplate: false, text: r.text, interactive: r.recordType === 'interactive' };
+      return [{ msgId: r.msgId, label, isTemplate: false, text: r.text, interactive: r.recordType === 'interactive' }];
     } catch (e) {
       const reason = e instanceof Error ? e.message : 'send failed';
       console.error(`[flow] custom message send failed for node ${nodeId} ("${label}"):`, reason);
-      return { label, isTemplate: false, text: `⚠ message not sent — ${reason}` };
+      return [{ label, isTemplate: false, text: `⚠ message not sent — ${reason}` }];
     }
   }
 
   const info = templateSendInfo(node);
   if (!info) return null;
   const msgId = await sendNodeTemplate(flow, nodeId, to);
-  return { msgId, label: info.name, isTemplate: true };
+  return [{ msgId, label: info.name, isTemplate: true }];
 }
 
 const DB    = 'nibiraponcollections';
@@ -209,28 +210,33 @@ interface FanCtx {
   sends: number;
 }
 
-/** Send one node, persist it to the inbox, and record a traversal step. */
+/** Send one node (possibly several WhatsApp messages), persist each, record one step. */
 async function deliverNode(ctx: FanCtx, nodeId: string, label: string): Promise<string | null> {
-  let sent: SentNode | null;
+  let sents: SentNode[] | null;
   try {
-    sent = await sendFlowNode(ctx.flow, nodeId, ctx.phone);
+    sents = await sendFlowNode(ctx.flow, nodeId, ctx.phone);
   } catch (e) {
     console.error(`[flow] send failed for node ${nodeId}:`, e instanceof Error ? e.message : e);
     return null;
   }
-  if (!sent) return null;
-  const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  await persistFlowMessage({
-    msgId, conversationId: ctx.conversationId, bizPhone: ctx.bizPhone, phone: ctx.phone,
-    status: sent.msgId ? 'sent' : 'failed',
-    kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text',
-    templateName: sent.label, text: sent.text, media: sent.media,
-  });
+  if (!sents || sents.length === 0) return null;
+
+  let lastMsgId = '';
+  for (const sent of sents) {
+    const msgId = sent.msgId || `wamid.flow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await persistFlowMessage({
+      msgId, conversationId: ctx.conversationId, bizPhone: ctx.bizPhone, phone: ctx.phone,
+      status: sent.msgId ? 'sent' : 'failed',
+      kind: sent.interactive ? 'interactive' : sent.isTemplate ? 'template' : 'text',
+      templateName: sent.label, text: sent.text, media: sent.media,
+    });
+    lastMsgId = msgId;
+  }
   ctx.steps.push({ at: new Date(), button: label, toNode: nodeId });
   ctx.lastNodeId = nodeId;
-  ctx.lastMsgId = msgId;
-  console.log(`[flow] sent "${sent.label}" (${label}) to ${ctx.phone} waId=${sent.msgId ?? 'none'}`);
-  return msgId;
+  ctx.lastMsgId = lastMsgId;
+  console.log(`[flow] node "${label}" sent ${sents.length} message(s) to ${ctx.phone}`);
+  return lastMsgId;
 }
 
 /**

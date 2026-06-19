@@ -72,12 +72,22 @@ export function textNodeContent(node: FlowNode | undefined): string | null {
 }
 
 /** A photo/video a textNode (message node) sends — uploaded asset or a public URL. */
-export interface FlowMedia { type: 'image' | 'video'; assetId?: string; url?: string; caption?: string; mimeType?: string; }
+export interface FlowMedia { type: 'image' | 'video'; assetId?: string; url?: string; caption?: string; mimeType?: string; bytes?: number; }
+function isValidMedia(m: FlowMedia | undefined | null): m is FlowMedia {
+  return !!m && (m.type === 'image' || m.type === 'video') && (!!m.assetId || !!m.url);
+}
 export function textNodeMedia(node: FlowNode | undefined): FlowMedia | null {
   if (!node || node.type !== 'textNode') return null;
   const m = (node.data as { media?: FlowMedia } | undefined)?.media;
-  if (!m || (m.type !== 'image' && m.type !== 'video') || (!m.assetId && !m.url)) return null;
-  return m;
+  return isValidMedia(m) ? m : null;
+}
+/** All photos/videos a textNode sends, in order. Reads the new `mediaList` array,
+ *  falling back to the legacy single `media` field. Sent serially by the runtime. */
+export function textNodeMediaList(node: FlowNode | undefined): FlowMedia[] {
+  if (!node || node.type !== 'textNode') return [];
+  const data = node.data as { mediaList?: FlowMedia[]; media?: FlowMedia } | undefined;
+  const list = Array.isArray(data?.mediaList) ? data!.mediaList : (data?.media ? [data.media] : []);
+  return list.filter(isValidMedia);
 }
 
 /** A short label for a textNode (its name), for logs/inbox. */
