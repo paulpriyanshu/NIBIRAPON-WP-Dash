@@ -25,7 +25,11 @@ async function dynamicRows(source: 'categories' | 'products', limit: number, ids
     const cats = pickByIds((await getAllCategories()).filter(c => !c.hidden), ids);
     return cats.slice(0, limit).map(c => ({ id: `cmopt:category:${c.id}`, title: c.name.slice(0, 24), description: c.description ?? undefined }));
   }
-  const products = pickByIds((await getAllInventory()).filter(p => !p.parentId && p.isActive), ids);
+  // When specific products are picked, honour them (including variants); otherwise
+  // default to active top-level products only.
+  const active = (await getAllInventory()).filter(p => p.isActive);
+  const base = ids?.length ? active : active.filter(p => !p.parentId);
+  const products = pickByIds(base, ids);
   return products.slice(0, limit).map(p => ({ id: `cmopt:product:${p.id}`, title: p.name.slice(0, 24), description: p.priceRange ?? undefined }));
 }
 
