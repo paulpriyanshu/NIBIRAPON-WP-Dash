@@ -547,7 +547,26 @@ async function agentReply({
     .filter(m => m.text)
     .map(m => ({ role: m.isOutgoing ? 'assistant' : 'user', content: m.text! }));
 
-  const { reply, media, list, template, customMessage, shouldRespond } = await runAgent(userText, chatHistory, { focusProductId, focusCategoryId });
+  // Products shown to the customer on the previous turn — pinned back into context so
+  // a bare follow-up ("price?", "size?", "this one?") resolves against what they're viewing.
+  const recentProductIds = await db
+    .select({ ids: conversations.lastProductIds })
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1)
+    .then(r => r[0]?.ids ?? [])
+    .catch(() => [] as string[]);
+
+  const { reply, media, list, template, customMessage, shouldRespond, shownProductIds } =
+    await runAgent(userText, chatHistory, { focusProductId, focusCategoryId, recentProductIds });
+
+  // Remember what we showed this turn so the next contextless question resolves against it.
+  if (shownProductIds.length) {
+    await db.update(conversations)
+      .set({ lastProductIds: shownProductIds, updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId))
+      .catch(err => console.error('[agent] failed to save lastProductIds:', err instanceof Error ? err.message : err));
+  }
   console.log(`[agent] shouldRespond=${shouldRespond} media=${media.length} list=${list ? 'yes' : 'no'} template=${template?.name ?? 'no'} custom=${customMessage?.name ?? 'no'} reply="${reply?.slice(0, 60)}…"`);
 
   if (!shouldRespond) return;

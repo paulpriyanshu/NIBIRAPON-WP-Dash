@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
 import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
-import { eq, and, isNull, asc } from 'drizzle-orm';
+import { eq, and, isNull, asc, inArray } from 'drizzle-orm';
 import { agentDraftsColl, templateMessagesColl, toObjectId, getTemplateAgentMetaMap } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
@@ -41,7 +41,7 @@ interface ResolvedTemplateDraft {
   config: TemplateMessageConfig;
   preview: string;
 }
-export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; customMessage?: CustomMessage; shouldRespond: boolean; }
+export interface AgentResult  { reply: string; media: AgentMediaOut[]; list?: AgentListOut; template?: AgentTemplateOut; customMessage?: CustomMessage; shouldRespond: boolean; shownProductIds: string[]; }
 
 type ProductRow = typeof catalogProducts.$inferSelect;
 
@@ -102,6 +102,19 @@ async function getProductById(id: string): Promise<ProductRow | null> {
     .where(and(eq(catalogProducts.id, id), eq(catalogProducts.isActive, true)))
     .limit(1);
   return p ?? null;
+}
+
+/** Fetch active products by id — used to pin the items most recently shown to the
+ *  customer, so contextless follow-ups ("price?", "size?") resolve against them. */
+async function getProductsByIds(ids: string[]): Promise<ProductRow[]> {
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(catalogProducts)
+    .where(and(inArray(catalogProducts.id, ids), eq(catalogProducts.isActive, true)));
+  // Preserve the requested order (most-recent first).
+  const byId = new Map(rows.map(r => [r.id, r]));
+  return ids.map(id => byId.get(id)).filter((p): p is ProductRow => !!p);
 }
 
 /** Hero/"push" products the owner wants the agent to actively recommend. Always
@@ -168,10 +181,11 @@ function formatCatalogContext(products: ProductRow[]): string {
 
 // ── Fetch agent settings + drafts ────────────────────────────────────────────
 
-async function getContextData(userMessage: string, focusProductId?: string, focusCategoryId?: string): Promise<{
+async function getContextData(userMessage: string, focusProductId?: string, focusCategoryId?: string, recentProductIds: string[] = []): Promise<{
   settingsPrompt: string;
   agentName: string;
   products: ProductRow[];
+  recentProducts: ProductRow[];
   categories: AgentCategory[];
   catalogContext: string;
   draftsContext: string;
@@ -209,6 +223,18 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     const catProducts = await getCategoryProducts(focusCategoryId);
     const have = new Set(pinnedProducts.map(p => p.id));
     const add = catProducts.filter(p => !have.has(p.id));
+    if (add.length) pinnedProducts = [...add, ...pinnedProducts];
+  }
+
+  // Pin the products most recently shown to the customer (carried over from the last
+  // turn) so a contextless follow-up like "price?" / "size?" resolves against what
+  // they're looking at, even when semantic search on the bare question finds nothing.
+  const recentProducts = await getProductsByIds(
+    recentProductIds.filter(id => id !== focusProductId),
+  ).catch(() => [] as ProductRow[]);
+  if (recentProducts.length) {
+    const have = new Set(pinnedProducts.map(p => p.id));
+    const add = recentProducts.filter(p => !have.has(p.id));
     if (add.length) pinnedProducts = [...add, ...pinnedProducts];
   }
 
@@ -312,6 +338,7 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     settingsPrompt,
     agentName,
     products: pinnedProducts,
+    recentProducts,
     categories,
     catalogContext: formatCatalogContext(pinnedProducts),
     draftsContext,
@@ -324,10 +351,17 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
 
 // ── Base system prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, customMsgsCtx: string, extra: string, categories: AgentCategory[]): string {
+function buildSystemPrompt(agentName: string, catalogCtx: string, draftsCtx: string, templateDraftsCtx: string, customMsgsCtx: string, extra: string, categories: AgentCategory[], recentProducts: ProductRow[]): string {
   const categoryLine = categories.length
     ? categories.map(c => c.name + (c.imageUrl || c.imageAssetId ? ' 🖼️' : '')).join(', ')
     : '(none configured)';
+  // What the customer is looking at right now — the products we showed last turn.
+  // Lets a bare follow-up ("price?", "size?", "this one?") resolve against them.
+  const viewingCtx = recentProducts.length
+    ? `## What the customer is currently looking at
+The customer was most recently shown these product(s): ${recentProducts.map(p => `"${p.name}"${p.priceRange ? ` (₹${p.priceRange})` : ''}`).join(', ')}.
+A short follow-up like "price?", "how much?", "pp?", "size?", "fabric?", "this one?" almost always refers to THESE — answer it directly from the catalog below. When asked the price, STATE IT plainly (e.g. "It's ₹1250 😊") — never deflect with "which saree?" or a product list when you already know what they're viewing.`
+    : '';
   return `
 You are ${agentName}, the warm and friendly AI sales assistant for Nibirapon — a premium Indian saree brand by FemFashion. Think of yourself as a real, caring saree consultant who genuinely loves helping customers find their perfect drape.
 
@@ -395,6 +429,7 @@ si6. Never mention competitor brands.
 ## Sending a custom message
 - When a saved custom message below fits — especially an options list or buttons to ask the customer to choose (e.g. a category, a size, yes/no) — call \`send_custom_message\` with its id. Still write a short warm text reply too. Only use ids listed below; never invent them.
 
+${viewingCtx ? viewingCtx + '\n' : ''}
 ${catalogCtx ? catalogCtx + '\n' : ''}
 ${draftsCtx  ? draftsCtx  + '\n' : ''}
 ${templateDraftsCtx ? templateDraftsCtx + '\n' : ''}
@@ -572,13 +607,13 @@ function buildProductList(products: ProductRow[], ids: string[]): AgentListOut |
 export async function runAgent(
   userMessage: string,
   history: AgentMessage[] = [],
-  opts: { focusProductId?: string; focusCategoryId?: string } = {},
+  opts: { focusProductId?: string; focusCategoryId?: string; recentProductIds?: string[] } = {},
 ): Promise<AgentResult> {
-  const { focusProductId, focusCategoryId } = opts;
-  if (!focusProductId && !focusCategoryId && !isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false };
+  const { focusProductId, focusCategoryId, recentProductIds = [] } = opts;
+  if (!focusProductId && !focusCategoryId && !isMeaningful(userMessage)) return { reply: '', media: [], shouldRespond: false, shownProductIds: [] };
 
-  const { settingsPrompt, agentName, products, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts, customMessages, customMessagesContext } =
-    await getContextData(userMessage, focusProductId, focusCategoryId);
+  const { settingsPrompt, agentName, products, recentProducts, categories, catalogContext, draftsContext, templateDraftsContext, templateDrafts, customMessages, customMessagesContext } =
+    await getContextData(userMessage, focusProductId, focusCategoryId, recentProductIds);
 
   // A product / category tap arrives with no typed text — turn it into an instruction
   // so the AI responds conversationally (and prefers pre-made content where it fits).
@@ -592,7 +627,7 @@ export async function runAgent(
     effectiveMessage = `The customer chose the "${catName ?? 'selected'}" category. FIRST check the Templates and Custom messages sections: if a marketing template or custom message is meant for this category, SEND THAT (prefer it over making your own). Otherwise show this category's products with send_product_list. Always add a warm intro line and end with a follow-up question.`;
   }
 
-  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, customMessagesContext, settingsPrompt, categories);
+  const systemPrompt = buildSystemPrompt(agentName, catalogContext, draftsContext, templateDraftsContext, customMessagesContext, settingsPrompt, categories, recentProducts);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -663,14 +698,20 @@ export async function runAgent(
 
     // Category tap fallback: if the AI sent no template/custom message/list/media,
     // still show that category's products so the customer isn't left empty-handed.
+    let fallbackListIds: string[] = [];
     if (focusCategoryId && !list && !template && !customMessage && media.length === 0) {
-      const catIds = products.filter(p => p.categoryId === focusCategoryId).map(p => p.id);
-      list = buildProductList(products, catIds);
+      fallbackListIds = products.filter(p => p.categoryId === focusCategoryId).map(p => p.id);
+      list = buildProductList(products, fallbackListIds);
     }
 
-    return { reply, media, list, template, customMessage, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template || !!customMessage };
+    // Products the customer is now looking at — photos sent (incl. a tapped product)
+    // plus any offered in a list. Carried to the next turn so a bare "price?"/"size?"
+    // resolves against them. Keep prior context when nothing new was shown this turn.
+    const shownProductIds = Array.from(new Set([...ids, ...listProductIds, ...fallbackListIds]));
+
+    return { reply, media, list, template, customMessage, shouldRespond: reply.length > 0 || media.length > 0 || !!list || !!template || !!customMessage, shownProductIds };
   } catch (err) {
     console.error('[agent] OpenAI error:', err instanceof Error ? err.message : err);
-    return { reply: '', media: [], shouldRespond: false };
+    return { reply: '', media: [], shouldRespond: false, shownProductIds: [] };
   }
 }

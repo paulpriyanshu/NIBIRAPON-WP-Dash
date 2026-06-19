@@ -77,6 +77,10 @@ export const conversations = pgTable('conversations', {
   isMuted:      boolean('is_muted').notNull().default(false),
   unreadCount:  integer('unread_count').notNull().default(0),
   agentEnabled: boolean('agent_enabled').notNull().default(true),
+  // Catalog product ids most recently shown to the customer by the agent. Pinned
+  // back into the agent's context next turn so contextless follow-ups ("price?",
+  // "size?", "this one?") resolve against the product the customer is looking at.
+  lastProductIds: jsonb('last_product_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:    timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
