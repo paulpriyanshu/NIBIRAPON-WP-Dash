@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       name, description, priceRange, categoryId, fabric, occasions,
-      customInfo, contentId, tags, media, inAgentContext, parentId, variantAttributes,
+      customInfo, contentId, tags, media, inAgentContext, isActive, parentId, variantAttributes,
     } = body;
 
     if (!name?.trim()) {
@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
         parentId:          parentId    || null,
         variantAttributes: cleanVariantAttributes(variantAttributes),
         inAgentContext:    !!inAgentContext,
+        ...(isActive !== undefined && { isActive: !!isActive }),
       })
       .returning({ id: catalogProducts.id });
 
