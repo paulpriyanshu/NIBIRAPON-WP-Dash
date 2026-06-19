@@ -14,7 +14,7 @@ import type { TemplateMessage, TemplateMessageConfig } from '@/lib/templates';
 interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; }
 interface PickMedia { type: 'image' | 'video'; assetId?: string; url?: string }
 /** A product offered in the MPM/catalog picker — mapped to WhatsApp by its contentId. */
-interface PickProduct { id: string; name: string; contentId: string | null; priceRange: string | null; media: PickMedia[] }
+interface PickProduct { id: string; name: string; contentId: string | null; priceRange: string | null; parentId: string | null; media: PickMedia[] }
 function pickMediaSrc(m?: PickMedia): string { return m ? (m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? '')) : ''; }
 
 interface Flow extends EngineFlow {
@@ -193,7 +193,6 @@ function ProductThumbSelect({ products, value, onChange }: { products: PickProdu
 /** Pick the MPM products (multi) — stores their Content IDs as a comma list. */
 function ProductMultiSelect({ products, value, onChange }: { products: PickProduct[]; value: string; onChange: (csv: string) => void }) {
   const [q, setQ] = useState('');
-  const usable = products.filter(p => p.contentId);
   const selectedIds = value.split(',').map(s => s.trim()).filter(Boolean);
   const toggle = (cid: string) => {
     const set = new Set(selectedIds);
@@ -201,13 +200,17 @@ function ProductMultiSelect({ products, value, onChange }: { products: PickProdu
     onChange([...set].join(','));
   };
   const ql = q.toLowerCase();
-  const filtered = usable.filter(p => p.name.toLowerCase().includes(ql) || (p.contentId ?? '').toLowerCase().includes(ql));
+  // Show ALL products (parents AND variants); only those with a Content ID can be
+  // picked — the rest are shown disabled so you know to add an ID in Inventory.
+  const filtered = products.filter(p => p.name.toLowerCase().includes(ql) || (p.contentId ?? '').toLowerCase().includes(ql));
+  const byCid = new Map(products.filter(p => p.contentId).map(p => [p.contentId!, p]));
+  const missingContentId = products.some(p => !p.contentId);
   return (
     <div className="space-y-1.5">
       {selectedIds.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {selectedIds.map(cid => {
-            const p = usable.find(x => x.contentId === cid);
+            const p = byCid.get(cid);
             return (
               <span key={cid} className="flex items-center gap-1 text-[10px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full">
                 {p?.name ?? cid}
@@ -218,28 +221,37 @@ function ProductMultiSelect({ products, value, onChange }: { products: PickProdu
         </div>
       )}
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search products to add…" className={inputCls} />
-      {usable.length === 0 ? (
-        <p className="text-amber-400/70 text-[10px]">No products have a Content ID yet — add one per product in Inventory to pick them here.</p>
+      {products.length === 0 ? (
+        <p className="text-white/30 text-[10px]">No products yet.</p>
       ) : (
-        <div className="max-h-36 overflow-y-auto bg-[#0b141a] border border-white/8 rounded-lg divide-y divide-white/5">
+        <div className="max-h-44 overflow-y-auto bg-[#0b141a] border border-white/8 rounded-lg divide-y divide-white/5">
           {filtered.map(p => {
-            const on = selectedIds.includes(p.contentId!);
+            const usable = !!p.contentId;
+            const on = usable && selectedIds.includes(p.contentId!);
             return (
-              <button key={p.id} onClick={() => toggle(p.contentId!)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-colors ${on ? 'bg-[#25D366]/10' : 'hover:bg-white/5'}`}>
-                <input type="checkbox" readOnly checked={on} className="accent-[#25D366] shrink-0" />
+              <button key={p.id} onClick={() => usable && toggle(p.contentId!)} disabled={!usable}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-colors ${on ? 'bg-[#25D366]/10' : usable ? 'hover:bg-white/5' : 'opacity-50 cursor-not-allowed'}`}>
+                <input type="checkbox" readOnly checked={on} disabled={!usable} className="accent-[#25D366] shrink-0" />
                 <div className="w-7 h-7 rounded overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
                   {p.media?.[0]
                     // eslint-disable-next-line @next/next/no-img-element
                     ? <img src={pickMediaSrc(p.media[0])} alt="" className="w-full h-full object-cover" />
                     : null}
                 </div>
-                <span className="flex-1 min-w-0 text-white/75 text-[10px] truncate">{p.name}</span>
-                {p.priceRange && <span className="text-white/35 text-[9px] shrink-0">{p.priceRange}</span>}
+                <span className="flex-1 min-w-0 text-white/75 text-[10px] truncate">
+                  {p.parentId && <span className="text-white/30">↳ </span>}{p.name}
+                  {p.parentId && <span className="text-white/30 text-[8px] ml-1">variant</span>}
+                </span>
+                {!usable
+                  ? <span className="text-amber-400/70 text-[8px] shrink-0">no Content ID</span>
+                  : p.priceRange && <span className="text-white/35 text-[9px] shrink-0">{p.priceRange}</span>}
               </button>
             );
           })}
         </div>
+      )}
+      {missingContentId && (
+        <p className="text-white/30 text-[9px]">Greyed products (and variants) need a Content ID — set one in Inventory to pick them.</p>
       )}
     </div>
   );
@@ -602,7 +614,7 @@ export default function ActiveFlowsPanel() {
     fetch('/api/template-messages').then(r => r.ok ? r.json() : []).then(setSavedMessages).catch(() => {});
     fetch('/api/media').then(r => r.ok ? r.json() : []).then(setMedia).catch(() => {});
     fetch('/api/inventory').then(r => r.ok ? r.json() : []).then((rows: PickProduct[]) =>
-      setProducts(rows.map(p => ({ id: p.id, name: p.name, contentId: p.contentId, priceRange: p.priceRange, media: p.media ?? [] })))
+      setProducts(rows.map(p => ({ id: p.id, name: p.name, contentId: p.contentId, priceRange: p.priceRange, parentId: p.parentId, media: p.media ?? [] })))
     ).catch(() => {});
   }, []);
 

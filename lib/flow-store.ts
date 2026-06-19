@@ -9,12 +9,20 @@ import {
   compileFlow, resolveNext,
   templateSendInfo, templatesInFlow, getTemplate, templateKindFlags,
   textNodeContent, textNodeLabel, textNodeMediaList, isSendableNode,
-  customNodeMessageId, nodeReplyOptions, findRootNodes, nodeShortLabel, orderedSendableNodes,
+  customNodeMessageId, templateFallbackCustomId, nodeReplyOptions, findRootNodes, nodeShortLabel, orderedSendableNodes,
   type Flow, type FlowButton, type FlowNode, type FlowMedia, type CompiledFlow,
 } from '@/lib/flow-engine';
 import { configToSendPayload } from '@/lib/templates';
 import { getCustomMessage } from '@/lib/custom-message-store';
-import { sendCustomMessage } from '@/lib/custom-message-send';
+import { sendCustomMessage, type CustomSendResult } from '@/lib/custom-message-send';
+
+/** Map a sent custom message into a SentNode for persistence/logging. */
+function customResultToSent(label: string, r: CustomSendResult, caption?: string): SentNode {
+  if (r.recordType === 'image' || r.recordType === 'video') {
+    return { msgId: r.msgId, label, isTemplate: false, text: r.text, media: { type: r.recordType, displayUrl: r.mediaUrl ?? null, caption } };
+  }
+  return { msgId: r.msgId, label, isTemplate: false, text: r.text, interactive: r.recordType === 'interactive' };
+}
 
 /** Send a template node with its configured params (handles MPM/catalog). Returns the wamid. */
 async function sendNodeTemplate(flow: Flow, nodeId: string, to: string): Promise<string | undefined> {
@@ -123,10 +131,7 @@ async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<Sen
     try {
       const r = await sendCustomMessage(to, m);
       console.log(`[flow] ✓ custom message "${m.name}" sent waId=${r.msgId ?? 'none'}`);
-      if (r.recordType === 'image' || r.recordType === 'video') {
-        return [{ msgId: r.msgId, label, isTemplate: false, text: r.text, media: { type: r.recordType, displayUrl: r.mediaUrl ?? null, caption: m.caption } }];
-      }
-      return [{ msgId: r.msgId, label, isTemplate: false, text: r.text, interactive: r.recordType === 'interactive' }];
+      return [customResultToSent(label, r, m.caption)];
     } catch (e) {
       const reason = e instanceof Error ? e.message : 'send failed';
       console.error(`[flow] custom message send failed for node ${nodeId} ("${label}"):`, reason);
@@ -136,15 +141,31 @@ async function sendFlowNode(flow: Flow, nodeId: string, to: string): Promise<Sen
 
   const info = templateSendInfo(node);
   if (!info) return null;
-  try {
-    const msgId = await sendNodeTemplate(flow, nodeId, to);
-    return [{ msgId, label: info.name, isTemplate: true }];
-  } catch (e) {
-    // Don't let a template send error halt the rest of the flow — record it and continue.
-    const reason = e instanceof Error ? e.message : 'send failed';
-    console.error(`[flow] template send failed for node ${nodeId} ("${info.name}"):`, reason);
-    return [{ label: info.name, isTemplate: true, text: `⚠ template not sent — ${reason}` }];
+  let tplMsgId: string | undefined;
+  let tplErr: string | undefined;
+  try { tplMsgId = await sendNodeTemplate(flow, nodeId, to); }
+  catch (e) { tplErr = e instanceof Error ? e.message : 'send failed'; }
+  if (tplMsgId) return [{ msgId: tplMsgId, label: info.name, isTemplate: true }];
+
+  // Template couldn't be sent (rejected / outside 24h window / API error). If a
+  // fallback custom message is configured on the node, send that instead.
+  console.error(`[flow] template "${info.name}" not sent${tplErr ? `: ${tplErr}` : ' (no message id)'}`);
+  const fbId = templateFallbackCustomId(node);
+  if (fbId) {
+    const fm = await getCustomMessage(fbId);
+    if (fm) {
+      try {
+        const r = await sendCustomMessage(to, fm);
+        console.log(`[flow] fallback custom message "${fm.name}" sent in place of template "${info.name}"`);
+        return [customResultToSent(fm.name, r, fm.caption)];
+      } catch (e) {
+        console.error(`[flow] fallback custom message "${fm.name}" failed:`, e instanceof Error ? e.message : e);
+      }
+    } else {
+      console.warn(`[flow] fallback custom message ${fbId} not found for template "${info.name}"`);
+    }
   }
+  return [{ label: info.name, isTemplate: true, text: `⚠ template not sent — ${tplErr ?? 'rejected'}` }];
 }
 
 const DB    = 'nibiraponcollections';
