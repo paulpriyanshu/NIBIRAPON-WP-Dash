@@ -38,21 +38,28 @@ function SourceSelector({ value, onChange }: { value: 'manual' | 'categories' | 
 const fieldCls = 'w-full border border-gray-200 dark:border-[#2a3942] dark:bg-[#1f2c34] dark:text-[#e9edef] rounded-lg px-3 py-2 text-sm outline-none focus:border-wp-green transition-colors';
 
 /** Pick which categories/products to show (empty = all). Order follows selection. */
+interface PickItem { id: string; name: string; image?: string; price?: string; isVariant?: boolean }
 function OptionPicker({ source, selected, onChange }: { source: 'categories' | 'products'; selected: string[]; onChange: (ids: string[]) => void }) {
-  const [items, setItems] = useState<{ id: string; name: string }[]>([]);
+  const [items, setItems] = useState<PickItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
   useEffect(() => {
     setLoading(true);
     const url = source === 'categories' ? '/api/categories' : '/api/inventory';
-    fetch(url).then(r => r.ok ? r.json() : []).then((data: { id: string; name: string; parentId?: string | null; isActive?: boolean }[]) => {
-      const list = source === 'categories'
-        ? data.map(c => ({ id: c.id, name: c.name }))
-        : data.filter(p => !p.parentId && p.isActive !== false).map(p => ({ id: p.id, name: p.name }));
+    fetch(url).then(r => r.ok ? r.json() : []).then((data: any[]) => {
+      const list: PickItem[] = source === 'categories'
+        ? data.map(c => ({ id: c.id, name: c.name, image: c.imageAssetId ? `/api/inventory/media/${c.imageAssetId}` : (c.imageUrl || undefined) }))
+        : data.filter(p => p.isActive !== false).map(p => ({
+            id: p.id, name: p.name, price: p.priceRange || undefined, isVariant: !!p.parentId,
+            image: p.media?.[0] ? (p.media[0].assetId ? `/api/inventory/media/${p.media[0].assetId}` : p.media[0].url) : undefined,
+          }));
       setItems(list);
     }).catch(() => setItems([])).finally(() => setLoading(false));
   }, [source]);
 
   const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+  const ql = q.toLowerCase();
+  const filtered = items.filter(it => it.name.toLowerCase().includes(ql));
 
   return (
     <div>
@@ -69,14 +76,27 @@ function OptionPicker({ source, selected, onChange }: { source: 'categories' | '
       ) : items.length === 0 ? (
         <p className="text-[11px] text-gray-400 dark:text-[#667781]">No {source} found.</p>
       ) : (
-        <div className="max-h-40 overflow-y-auto border border-gray-200 dark:border-[#2a3942] rounded-lg divide-y divide-gray-100 dark:divide-[#2a3942]">
-          {items.map(it => (
-            <label key={it.id} className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 dark:text-[#e9edef] cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34]">
-              <input type="checkbox" checked={selected.includes(it.id)} onChange={() => toggle(it.id)} className="accent-wp-green" />
-              {it.name}
-            </label>
-          ))}
-        </div>
+        <>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder={`Search ${source}…`} className={`${fieldCls} mb-1.5`} />
+          <div className="max-h-52 overflow-y-auto border border-gray-200 dark:border-[#2a3942] rounded-lg divide-y divide-gray-100 dark:divide-[#2a3942]">
+            {filtered.map(it => (
+              <label key={it.id} className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-gray-700 dark:text-[#e9edef] cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34]">
+                <input type="checkbox" checked={selected.includes(it.id)} onChange={() => toggle(it.id)} className="accent-wp-green shrink-0" />
+                <div className="w-8 h-8 rounded overflow-hidden bg-gray-100 dark:bg-[#1f2c34] shrink-0 flex items-center justify-center">
+                  {it.image
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img src={it.image} alt="" className="w-full h-full object-cover" />
+                    : null}
+                </div>
+                <span className="flex-1 min-w-0 truncate">
+                  {it.isVariant && <span className="text-gray-400">↳ </span>}{it.name}
+                  {it.isVariant && <span className="text-[10px] text-gray-400 ml-1">variant</span>}
+                </span>
+                {it.price && <span className="text-[11px] text-gray-400 shrink-0">{it.price}</span>}
+              </label>
+            ))}
+          </div>
+        </>
       )}
       <p className="text-[11px] text-gray-400 dark:text-[#667781] mt-1">Leave all unchecked to show every {source} (up to the WhatsApp limit).</p>
     </div>
