@@ -10,7 +10,7 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await req.json();
-    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext } = body;
+    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext, hidden } = body;
 
     await db
       .update(categories)
@@ -21,6 +21,7 @@ export async function PATCH(
         ...(imageAssetId   !== undefined && { imageAssetId: imageAssetId || null }),
         ...(sortOrder      !== undefined && { sortOrder: Number(sortOrder) || 0 }),
         ...(inAgentContext !== undefined && { inAgentContext: !!inAgentContext }),
+        ...(hidden         !== undefined && { hidden: !!hidden }),
         updatedAt: new Date(),
       })
       .where(eq(categories.id, id));

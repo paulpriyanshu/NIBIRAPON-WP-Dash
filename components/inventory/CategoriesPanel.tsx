@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import {
-  Tags, Plus, Trash2, Pencil, Check, Loader2, Bot, ImageIcon, Package,
+  Tags, Plus, Trash2, Pencil, Check, Loader2, Bot, ImageIcon, Package, EyeOff,
 } from 'lucide-react';
 import { inputCls, imageSrc, SingleImagePicker, type SingleImage } from './shared';
 
@@ -23,9 +23,10 @@ export interface Category {
   imageAssetId: string | null;
   sortOrder: number;
   inAgentContext: boolean;
+  hidden: boolean;
 }
 
-const EMPTY = { name: '', description: '', image: null as SingleImage | null, inAgentContext: true };
+const EMPTY = { name: '', description: '', image: null as SingleImage | null, inAgentContext: true, hidden: false };
 type CategoryForm = typeof EMPTY;
 
 function toImage(c: Pick<Category, 'imageAssetId' | 'imageUrl'>): SingleImage | null {
@@ -67,6 +68,12 @@ function CategoryFormCard({ initial, onSave, onCancel, loading }: {
           className="accent-[#25D366]" />
         <Bot size={12} /> Show this category to the AI agent
       </label>
+      <label className="flex items-center gap-2 text-white/50 text-xs cursor-pointer select-none">
+        <input type="checkbox" checked={form.hidden}
+          onChange={e => setForm(f => ({ ...f, hidden: e.target.checked }))}
+          className="accent-red-500" />
+        <EyeOff size={12} /> Hide this category everywhere (agent, flows, storefront)
+      </label>
       <div className="flex justify-end gap-2 pt-1">
         <button onClick={onCancel} className="px-4 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/5 transition-all">Cancel</button>
         <button onClick={() => onSave(form)} disabled={loading || !form.name.trim()}
@@ -94,13 +101,16 @@ export default function CategoriesPanel({ categories, onChange }: {
     fetch('/api/inventory').then(r => r.ok ? r.json() : []).then((rows: CatProduct[]) => setProducts(rows)).catch(() => {});
   }, []);
 
-  // Top-level products grouped by category id.
+  // All products (parents AND variants) grouped by category. A variant with no
+  // category of its own inherits its parent's category.
+  const catOf = new Map(products.map(p => [p.id, p.categoryId]));
   const byCategory = new Map<string, CatProduct[]>();
   for (const p of products) {
-    if (p.parentId || !p.categoryId) continue;
-    const arr = byCategory.get(p.categoryId) ?? [];
+    const cid = p.categoryId ?? (p.parentId ? catOf.get(p.parentId) ?? null : null);
+    if (!cid) continue;
+    const arr = byCategory.get(cid) ?? [];
     arr.push(p);
-    byCategory.set(p.categoryId, arr);
+    byCategory.set(cid, arr);
   }
   const selected = categories.find(c => c.id === selectedId) ?? null;
 
@@ -110,6 +120,7 @@ export default function CategoriesPanel({ categories, onChange }: {
     imageUrl:       data.image?.url     ?? null,
     imageAssetId:   data.image?.assetId ?? null,
     inAgentContext: data.inAgentContext,
+    hidden:         data.hidden,
   });
 
   const addCategory = async (data: CategoryForm) => {
@@ -166,8 +177,8 @@ export default function CategoriesPanel({ categories, onChange }: {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <p className={`text-xs font-medium truncate ${isSel ? 'text-white' : 'text-white/85'}`}>{c.name}</p>
-                    {c.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
+                    <p className={`text-xs font-medium truncate ${c.hidden ? 'text-white/40 line-through' : isSel ? 'text-white' : 'text-white/85'}`}>{c.name}</p>
+                    {c.hidden ? <EyeOff size={11} className="text-red-400/70 shrink-0" /> : c.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
                   </div>
                   <p className="text-white/30 text-[10px] mt-0.5">{prods.length} product{prods.length !== 1 ? 's' : ''}</p>
                 </div>
@@ -188,7 +199,7 @@ export default function CategoriesPanel({ categories, onChange }: {
           <div className="max-w-2xl mx-auto p-6 space-y-4">
             <h2 className="text-white font-semibold text-sm">Edit “{selected.name}”</h2>
             <CategoryFormCard
-              initial={{ name: selected.name, description: selected.description ?? '', image: toImage(selected), inAgentContext: selected.inAgentContext }}
+              initial={{ name: selected.name, description: selected.description ?? '', image: toImage(selected), inAgentContext: selected.inAgentContext, hidden: selected.hidden }}
               onSave={data => updateCategory(selected.id, data)}
               onCancel={() => setEditId(null)}
               loading={saving}
@@ -207,7 +218,10 @@ export default function CategoriesPanel({ categories, onChange }: {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-white font-semibold text-base">{selected.name}</h2>
-                  {selected.inAgentContext && (
+                  {selected.hidden && (
+                    <span className="text-[9px] bg-red-500/15 text-red-300 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><EyeOff size={8} /> Hidden</span>
+                  )}
+                  {selected.inAgentContext && !selected.hidden && (
                     <span className="text-[9px] bg-[#25D366]/15 text-[#25D366] px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><Bot size={8} /> In agent</span>
                   )}
                   <span className="text-[9px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded-full">{selectedProds.length} product{selectedProds.length !== 1 ? 's' : ''}</span>

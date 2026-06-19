@@ -192,7 +192,7 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
         imageAssetId: categoriesTable.imageAssetId,
       })
       .from(categoriesTable)
-      .where(eq(categoriesTable.inAgentContext, true))
+      .where(and(eq(categoriesTable.inAgentContext, true), eq(categoriesTable.hidden, false)))
       .orderBy(asc(categoriesTable.sortOrder), asc(categoriesTable.name))
       .catch(() => [] as AgentCategory[]),
     customMessagesColl().then(c => c.find({ isActive: true }).sort({ updatedAt: -1 }).toArray()).catch(() => []),

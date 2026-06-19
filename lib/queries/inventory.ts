@@ -200,5 +200,6 @@ export async function getPublicCategories() {
       sortOrder:    categories.sortOrder,
     })
     .from(categories)
+    .where(eq(categories.hidden, false))
     .orderBy(asc(categories.sortOrder), asc(categories.name));
 }

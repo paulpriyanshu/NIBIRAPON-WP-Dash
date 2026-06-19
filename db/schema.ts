@@ -409,6 +409,9 @@ export const categories = pgTable('categories', {
   imageAssetId:   text('image_asset_id'),  // R2 key (served via /api/inventory/media)
   sortOrder:      integer('sort_order').notNull().default(0),
   inAgentContext: boolean('in_agent_context').notNull().default(true),
+  // Master kill switch: when true the category is hidden everywhere customer-facing
+  // (agent, flows, public API, dynamic lists). Still shown in the admin inventory.
+  hidden:         boolean('hidden').notNull().default(false),
   createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -4,7 +4,7 @@ import { useInfiniteList } from '@/hooks/useInfiniteList';
 import {
   Package, Plus, Trash2, Pencil, Check, Loader2,
   ChevronDown, ChevronUp, StickyNote,
-  Upload, Link2, ImageIcon, Film, Bot, Tags, GitBranch, X,
+  Upload, Link2, ImageIcon, Film, Bot, Tags, GitBranch, X, EyeOff,
 } from 'lucide-react';
 import { inputCls } from './shared';
 import CategoriesPanel, { type Category } from './CategoriesPanel';
@@ -38,6 +38,7 @@ const EMPTY_PRODUCT = {
   tags: [] as string[],
   parentId: '' as string,
   variantAttributes: [] as VariantAttribute[],
+  isActive: true,
 };
 type ProductForm = typeof EMPTY_PRODUCT;
 
@@ -365,6 +366,12 @@ function ProductFormCard({ initial, onSave, onCancel, loading, categories, paren
         </label>
         <MediaManager media={form.media} onChange={m => setForm(f => ({ ...f, media: m }))} />
       </div>
+      <label className="flex items-center gap-2 text-white/60 text-xs cursor-pointer select-none">
+        <input type="checkbox" checked={!form.isActive}
+          onChange={e => setForm(f => ({ ...f, isActive: !e.target.checked }))}
+          className="accent-red-500" />
+        <EyeOff size={12} /> Hide this product everywhere (agent, flows, storefront)
+      </label>
       <div className="flex justify-end gap-2 pt-1">
         <button onClick={onCancel} className="px-4 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/5 transition-all">Cancel</button>
         <button onClick={() => onSave(form)} disabled={loading || !form.name.trim()}
@@ -456,6 +463,7 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
     media:       p.media       ?? [],
     parentId:    p.parentId    ?? '',
     variantAttributes: p.variantAttributes ?? [],
+    isActive:    p.isActive,
   });
 
   const totalInAgent = products.filter(p => p.inAgentContext).length;
@@ -541,8 +549,8 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <p className={`text-xs font-medium truncate ${isSel ? 'text-white' : 'text-white/85'}`}>{p.name}</p>
-                            {p.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
+                            <p className={`text-xs font-medium truncate ${!p.isActive ? 'text-white/40 line-through' : isSel ? 'text-white' : 'text-white/85'}`}>{p.name}</p>
+                            {!p.isActive ? <EyeOff size={11} className="text-red-400/70 shrink-0" /> : p.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5 text-white/30 text-[10px]">
                             {p.priceRange && <span className="truncate">{p.priceRange}</span>}
@@ -654,7 +662,8 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
                           <h2 className="text-white font-semibold text-sm truncate">{target.name}</h2>
                           <p className="text-white/35 text-[11px] flex items-center gap-1">
                             {target.parentId ? <><GitBranch size={10} /> Variant</> : 'Product'}
-                            {target.inAgentContext && <span className="flex items-center gap-0.5 text-[#25D366]/80"><Bot size={10} /> in agent</span>}
+                            {!target.isActive && <span className="flex items-center gap-0.5 text-red-300"><EyeOff size={10} /> hidden</span>}
+                            {target.inAgentContext && target.isActive && <span className="flex items-center gap-0.5 text-[#25D366]/80"><Bot size={10} /> in agent</span>}
                           </p>
                           {target.contentId && (
                             <p className="text-white/30 text-[10px] mt-0.5 font-mono">ID: {target.contentId}</p>
