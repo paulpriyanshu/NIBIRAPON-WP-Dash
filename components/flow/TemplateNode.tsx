@@ -1,9 +1,27 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import { Layers, X, MessageSquare, Image, FileText, CornerUpLeft, ExternalLink, Phone, ShoppingBag } from 'lucide-react';
+import { Layers, X, MessageSquare, Image, FileText, CornerUpLeft, ExternalLink, Phone, ShoppingBag, LifeBuoy } from 'lucide-react';
 import type { Template, TemplateButton } from '@/types';
+
+// Cached, fetched-once list of custom messages (for the fallback selector).
+let _cmCache: { id: string; name: string }[] | null = null;
+let _cmPromise: Promise<{ id: string; name: string }[]> | null = null;
+function useCustomMessages() {
+  const [list, setList] = useState<{ id: string; name: string }[]>(_cmCache ?? []);
+  useEffect(() => {
+    if (_cmCache) { setList(_cmCache); return; }
+    if (!_cmPromise) {
+      _cmPromise = fetch('/api/custom-messages')
+        .then(r => (r.ok ? r.json() : []))
+        .then((rows: { id: string; name: string }[]) => { _cmCache = rows.map(m => ({ id: m.id, name: m.name })); return _cmCache; })
+        .catch(() => []);
+    }
+    _cmPromise.then(setList);
+  }, []);
+  return list;
+}
 
 // Icon per WhatsApp button type — quick-reply buttons are the ones that send a
 // reply you can branch on; URL / phone just open the link / dialer.
@@ -29,9 +47,11 @@ const HEADER_ICON = {
 };
 
 export default function TemplateNode({ id, data, selected }: NodeProps) {
-  const { deleteElements } = useReactFlow();
+  const { deleteElements, updateNodeData } = useReactFlow();
   const [hovered, setHovered] = useState(false);
   const template = data.template as Template;
+  const customMsgs = useCustomMessages();
+  const fallbackId = (data.fallbackCustomMessageId as string) ?? '';
 
   const body   = template.components.find(c => c.type === 'BODY');
   const header = template.components.find(c => c.type === 'HEADER');
@@ -131,7 +151,7 @@ export default function TemplateNode({ id, data, selected }: NodeProps) {
       </div>
 
       {/* Footer bar */}
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-2">
         {cat ? (
           <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${cat.bg} ${cat.text} font-medium`}>
             {cat.label}
@@ -140,6 +160,24 @@ export default function TemplateNode({ id, data, selected }: NodeProps) {
           <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gray-500/20 text-gray-400 font-medium">
             {template.category}
           </span>
+        )}
+      </div>
+
+      {/* Fallback — sent if the template can't be delivered (e.g. outside 24h window) */}
+      <div className="px-3 pb-3 nodrag">
+        <label className="text-white/30 text-[8px] uppercase tracking-wider mb-1 flex items-center gap-1">
+          <LifeBuoy size={9} /> Fallback if not sent
+        </label>
+        <select
+          value={fallbackId}
+          onChange={e => updateNodeData(id, { fallbackCustomMessageId: e.target.value })}
+          className="w-full bg-[#0b141a] border border-white/10 rounded px-1.5 py-1 text-white/70 text-[9px] focus:outline-none focus:border-[#25D366]/40"
+        >
+          <option value="">— none —</option>
+          {customMsgs.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        {fallbackId && !customMsgs.some(m => m.id === fallbackId) && (
+          <p className="text-amber-400/70 text-[8px] mt-0.5">selected message not found</p>
         )}
       </div>
 

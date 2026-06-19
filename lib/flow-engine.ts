@@ -104,6 +104,14 @@ export function customNodeMessageId(node: FlowNode | undefined): string | null {
   return typeof id === 'string' && id ? id : null;
 }
 
+/** A template node's fallback custom-message id — sent when the template itself
+ *  can't be delivered (e.g. a marketing/utility template outside the 24h window). */
+export function templateFallbackCustomId(node: FlowNode | undefined): string | null {
+  if (!node || node.type !== 'templateNode') return null;
+  const id = (node.data as { fallbackCustomMessageId?: string } | undefined)?.fallbackCustomMessageId;
+  return typeof id === 'string' && id ? id : null;
+}
+
 /** The tappable reply options a node offers — quick replies (templateNode) or the
  *  cached options of a customNode. Drives flow branching, uniformly. */
 export function nodeReplyOptions(node: FlowNode | undefined): FlowButton[] {
