@@ -304,7 +304,7 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   }
 
   // ── Insert message (idempotent) ───────────────────────────────────────────
-  await db.insert(messages).values({
+  const inserted = await db.insert(messages).values({
     id:            msg.id,
     conversationId,
     fromNumber:    fromPhone,
@@ -318,7 +318,19 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     isOutgoing:    false,
     sentBy:        null,   // incoming — always null
     sentAt:        new Date(parseInt(msg.timestamp) * 1000),
-  }).onConflictDoNothing();
+  }).onConflictDoNothing().returning({ id: messages.id });
+
+  // ── Idempotency guard ─────────────────────────────────────────────────────
+  // WhatsApp redelivers a webhook when our handler is slow to ack (the flow
+  // fan-out runs inline with delays, so a single tap can take ~60s). A retry
+  // carries the SAME msg.id, so the insert above no-ops and returns no row.
+  // Bail before the side effects (flow advance, agent reply, order capture) —
+  // otherwise the retried tap re-fires the whole branch and duplicates messages.
+  // The PK on messages.id makes this an atomic "first delivery wins" claim.
+  if (inserted.length === 0) {
+    console.log(`[webhook] duplicate delivery of message ${msg.id} — skipping side effects`);
+    return;
+  }
 
   // ── Email notification — fire for every inbound message (any number) ──────
   // Awaited (not fire-and-forget): on Vercel the lambda is frozen the moment the
