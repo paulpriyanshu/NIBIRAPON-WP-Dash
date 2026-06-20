@@ -9,6 +9,8 @@ import { findRootNodes, type Flow } from '@/lib/flow-engine';
 
 export const maxDuration = 300;
 
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 /** Find or create a contact + open conversation for a phone. */
 async function ensureConversation(phone: string): Promise<{ contactId: string; conversationId: string }> {
   let [contact] = await db.select().from(contacts).where(eq(contacts.phone, phone)).limit(1);
@@ -59,7 +61,12 @@ export async function POST(
     let started = 0;
     const failures: { phone: string; error: string }[] = [];
 
-    for (const phone of phones) {
+    // Pace the broadcast at one recipient per second so we don't blast WhatsApp
+    // (and trip its rate limits) all at once. At maxDuration=300s this caps a
+    // single launch at ~300 recipients.
+    for (let i = 0; i < phones.length; i++) {
+      const phone = phones[i];
+      if (i > 0) await sleep(1000); // 1 phone / second
       try {
         const { contactId, conversationId } = await ensureConversation(phone);
         const r = await startRun({
