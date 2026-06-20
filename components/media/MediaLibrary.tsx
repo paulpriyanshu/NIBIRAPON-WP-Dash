@@ -3,9 +3,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   Images, Film, ImageIcon, X, ChevronLeft, ChevronRight,
-  Package, Tags, GitBranch, Play, Upload, Loader2,
+  Package, Tags, GitBranch, Play, Upload, Loader2, AlertTriangle,
 } from 'lucide-react';
-import { formatBytes, fetchMediaSize } from './mediaUtils';
+import { formatBytes, fetchMediaSize, inspectVideo } from './mediaUtils';
 
 interface MediaUsage { kind: 'product' | 'category' | 'flow'; label: string; href: string; }
 interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; name?: string; bytes?: number; description?: string; usages: MediaUsage[]; }
@@ -23,6 +23,7 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
   const [uploading, setUploading] = useState(0);   // count of in-flight uploads
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
+  const [warnings, setWarnings] = useState<{ name: string; issues: string[] }[]>([]);
   const [sizes, setSizes] = useState<Record<string, number | null>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -70,12 +71,18 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
   const uploadFiles = useCallback(async (files: FileList | File[] | null) => {
     const arr = files ? Array.from(files) : [];
     if (!arr.length) return;
-    setError('');
+    setError(''); setWarnings([]);
     for (const file of arr) {
       const isVideo = file.type.startsWith('video');
       if (!isVideo && !file.type.startsWith('image')) { setError(`${file.name}: only images or videos`); continue; }
       const max = isVideo ? MAX_VIDEO : MAX_IMAGE;
       if (file.size > max) { setError(`${file.name}: too large (max ${Math.round(max / 1024 / 1024)}MB)`); continue; }
+      // Flag videos that may not play on WhatsApp/Android (upload still proceeds).
+      if (isVideo) {
+        const chk = await inspectVideo(file);
+        if (file.size > 16 * 1024 * 1024) chk.warnings.unshift(`${formatBytes(file.size)} is over WhatsApp's 16 MB send limit.`);
+        if (chk.warnings.length) setWarnings(w => [...w, { name: file.name, issues: chk.warnings }]);
+      }
       setUploading(n => n + 1);
       try {
         const signRes = await fetch('/api/inventory/upload', {
@@ -137,6 +144,28 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
           </button>
         </div>
         {error && <p className="text-red-400 text-[11px] pb-2">{error}</p>}
+        {warnings.length > 0 && (
+          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle size={12} className="text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-amber-300 text-[11px] font-medium">Uploaded, but these videos may not play on Android:</p>
+                {warnings.map((w, i) => (
+                  <div key={i} className="mt-1.5">
+                    <p className="text-amber-200/80 text-[10px] font-medium truncate">{w.name}</p>
+                    <ul className="list-disc pl-4 text-amber-200/60 text-[10px] leading-relaxed">
+                      {w.issues.map((s, j) => <li key={j}>{s}</li>)}
+                    </ul>
+                  </div>
+                ))}
+                <p className="text-amber-200/45 text-[9px] mt-2 font-mono break-all">
+                  Fix: ffmpeg -i in.mp4 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart out.mp4
+                </p>
+              </div>
+              <button onClick={() => setWarnings([])} className="text-amber-300/60 hover:text-amber-300 shrink-0"><X size={13} /></button>
+            </div>
+          </div>
+        )}
         <div className="flex gap-1">
           {([['all', 'All', Images], ['image', 'Images', ImageIcon], ['video', 'Videos', Film]] as const).map(([key, label, Icon]) => (
             <button key={key} onClick={() => setFilterSafe(key)}
