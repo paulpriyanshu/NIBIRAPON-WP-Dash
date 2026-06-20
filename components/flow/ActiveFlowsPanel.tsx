@@ -281,7 +281,10 @@ function ProductMultiSelect({ products, value, onChange }: { products: PickProdu
   );
 }
 
-function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[]; products: PickProduct[]; detail?: boolean }) {
+function FlowCard({ flow, onChanged, savedMessages, media, products, tracking, trackLoading, trackOpen, onToggleTracking, onReloadTracking }: {
+  flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[]; products: PickProduct[];
+  tracking: FlowTracking | null; trackLoading: boolean; trackOpen: boolean; onToggleTracking: () => void; onReloadTracking: () => void;
+}) {
   const roots = findRootNodes(flow);
   const specs = flowParamSpecs(flow);
   const isLive = flow.status === 'live';
@@ -299,33 +302,11 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: {
   const [launching, setLaunching]   = useState(false);
   const [result, setResult]         = useState('');
 
-  const [trackOpen, setTrackOpen]     = useState(!!detail);
-  const [tracking, setTracking]       = useState<FlowTracking | null>(null);
-  const [trackLoading, setTrackLoading] = useState(false);
-
   const loadStats = useCallback(async () => {
     const res = await fetch(`/api/flows/${flow._id}/runs`);
     if (res.ok) setStats(await res.json());
   }, [flow._id]);
   useEffect(() => { loadStats(); }, [loadStats]);
-
-  const loadTracking = useCallback(async () => {
-    setTrackLoading(true);
-    try {
-      const res = await fetch(`/api/flows/${flow._id}/tracking`);
-      if (res.ok) setTracking(await res.json());
-    } finally {
-      setTrackLoading(false);
-    }
-  }, [flow._id]);
-  const toggleTracking = () => {
-    setTrackOpen(o => {
-      if (!o) loadTracking();
-      return !o;
-    });
-  };
-  // In the detail pane, load tracking automatically so all info shows at once.
-  useEffect(() => { if (detail) loadTracking(); }, [detail, loadTracking]);
 
   const openModal = () => {
     setErr('');
@@ -454,10 +435,10 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: {
         </div>
       )}
 
-      {/* ── Tracking (delivery + funnel) ───────────────────────────── */}
+      {/* ── Tracking (delivery + node funnel; people list shows in the right column) ── */}
       {(isLive || (stats?.total ?? 0) > 0) && (
         <div className="border-t border-white/8">
-          <button onClick={toggleTracking}
+          <button onClick={onToggleTracking}
             className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] text-white/60 hover:bg-white/[0.03] transition-colors">
             <span className="flex items-center gap-1.5"><BarChart3 size={12} className="text-[#25D366]" /> Tracking</span>
             {trackOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
@@ -488,7 +469,7 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: {
                   <div className="flex items-center gap-3 text-[10px] text-white/35">
                     <span className="text-[#25D366]/70">{tracking.active} active</span>
                     <span>{tracking.stopped} stopped</span>
-                    <button onClick={loadTracking} className="ml-auto flex items-center gap-1 hover:text-white/70 transition-colors">
+                    <button onClick={onReloadTracking} className="ml-auto flex items-center gap-1 hover:text-white/70 transition-colors">
                       <RefreshCw size={10} /> Refresh
                     </button>
                   </div>
@@ -518,42 +499,9 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: {
                     </div>
                   )}
 
-                  {/* participants — who interacted & how far (deepest = warm leads) */}
-                  {tracking.participants && tracking.participants.length > 0 && (
-                    <div className="space-y-1.5 pt-2">
-                      <div className="flex items-center justify-between">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">People reached — deepest first</p>
-                        <button
-                          onClick={() => exportLeads(flow.name, tracking.participants)}
-                          className="text-[10px] text-[#25D366]/80 hover:text-[#25D366] flex items-center gap-1"
-                        >
-                          <Send size={9} /> Export CSV
-                        </button>
-                      </div>
-                      <div className="max-h-64 overflow-y-auto rounded-lg border border-white/8 divide-y divide-white/5">
-                        {tracking.participants.map(p => {
-                          const pct = Math.round((p.depth / (p.totalSteps || 1)) * 100);
-                          const deep = p.status === 'completed' || (p.stepCount > 0 && pct >= 50);
-                          return (
-                            <div key={p.phone} className="flex items-center gap-2 px-2.5 py-1.5">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  {deep && <Star size={10} className="text-amber-300 shrink-0 fill-amber-300" />}
-                                  <span className="text-white/80 text-[11px] truncate">{p.name}</span>
-                                </div>
-                                <span className="text-white/35 text-[10px]">{p.phone}{p.stepCount === 0 && ' · no taps yet'}</span>
-                              </div>
-                              <div className="text-right shrink-0 max-w-[42%]">
-                                <span className={`text-[10px] ${deep ? 'text-[#25D366]' : 'text-white/55'}`}>Step {p.depth}/{p.totalSteps}</span>
-                                <p className="text-white/30 text-[9px] truncate">{p.reachedLabel}</p>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <p className="text-white/25 text-[9px]">★ marks people who went at least halfway — your warmest leads.</p>
-                    </div>
-                  )}
+                  <p className="text-white/25 text-[9px] flex items-center gap-1 pt-1">
+                    <Users size={9} /> Per-number details are in the panel on the right →
+                  </p>
                 </>
               )}
             </div>
@@ -659,6 +607,71 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: {
   );
 }
 
+/** Extreme-right column: every number that interacted and how far they reached. */
+function ParticipantsPanel({ tracking, loading, flowName, onRefresh }: { tracking: FlowTracking | null; loading: boolean; flowName: string; onRefresh: () => void }) {
+  const people = tracking?.participants ?? [];
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Users size={13} className="text-[#25D366] shrink-0" />
+          <span className="text-white text-[12px] font-semibold truncate">People reached</span>
+          {people.length > 0 && <span className="text-white/35 text-[10px]">({people.length})</span>}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {people.length > 0 && (
+            <button onClick={() => exportLeads(flowName, people)} title="Export CSV"
+              className="p-1.5 rounded-lg text-[#25D366]/80 hover:text-[#25D366] hover:bg-white/5 transition-colors"><Send size={12} /></button>
+          )}
+          <button onClick={onRefresh} title="Refresh" className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/5 transition-colors"><RefreshCw size={12} /></button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {loading && !tracking ? (
+          <div className="flex justify-center py-8"><Loader2 size={16} className="animate-spin text-white/30" /></div>
+        ) : people.length === 0 ? (
+          <p className="text-white/25 text-[11px] px-4 py-6 text-center">No one has interacted yet.</p>
+        ) : (
+          <>
+            <p className="text-white/25 text-[9px] px-4 pt-3 pb-2">★ went at least halfway — your warmest leads. Deepest first.</p>
+            <div className="divide-y divide-white/5">
+              {people.map(p => {
+                const pct = Math.round((p.depth / (p.totalSteps || 1)) * 100);
+                const deep = p.status === 'completed' || (p.stepCount > 0 && pct >= 50);
+                const last = new Date(p.lastAt);
+                return (
+                  <div key={p.phone} className="px-4 py-2.5 hover:bg-white/[0.02]">
+                    <div className="flex items-center gap-1.5">
+                      {deep && <Star size={11} className="text-amber-300 shrink-0 fill-amber-300" />}
+                      <span className="text-white/85 text-[12px] font-medium truncate flex-1">{p.name}</span>
+                      <span className={`text-[10px] shrink-0 px-1.5 py-0.5 rounded-full ${
+                        p.status === 'completed' ? 'bg-[#25D366]/15 text-[#25D366]'
+                        : p.status === 'active' ? 'bg-amber-500/15 text-amber-300'
+                        : 'bg-white/8 text-white/40'}`}>{p.status}</span>
+                    </div>
+                    <p className="text-white/40 text-[11px] mt-0.5 tabular-nums">{p.phone}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${deep ? 'bg-[#25D366]/70' : 'bg-white/25'}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className={`text-[10px] shrink-0 ${deep ? 'text-[#25D366]' : 'text-white/45'}`}>{p.depth}/{p.totalSteps}</span>
+                    </div>
+                    <div className="flex items-center justify-between mt-1 text-white/30 text-[9px]">
+                      <span className="truncate pr-2">→ {p.reachedLabel}</span>
+                      <span className="shrink-0">{p.stepCount === 0 ? 'no taps' : `${p.stepCount} taps`} · {last.toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ActiveFlowsPanel() {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -666,6 +679,25 @@ export default function ActiveFlowsPanel() {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [products, setProducts] = useState<PickProduct[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Tracking (lifted here so the per-number list can live in its own right column).
+  const [trackOpen, setTrackOpen]       = useState(false);
+  const [tracking, setTracking]         = useState<FlowTracking | null>(null);
+  const [trackLoading, setTrackLoading] = useState(false);
+
+  const loadTracking = useCallback(async () => {
+    if (!selectedId) return;
+    setTrackLoading(true);
+    try {
+      const res = await fetch(`/api/flows/${selectedId}/tracking`);
+      if (res.ok) setTracking(await res.json());
+    } finally {
+      setTrackLoading(false);
+    }
+  }, [selectedId]);
+  const toggleTracking = () => setTrackOpen(o => { if (!o) loadTracking(); return !o; });
+  // Reset tracking when the selected flow changes; reload if the panel is open.
+  useEffect(() => { setTracking(null); if (trackOpen && selectedId) loadTracking(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [selectedId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -741,11 +773,16 @@ export default function ActiveFlowsPanel() {
         </div>
       </div>
 
-      {/* ── Detail pane ─────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      {/* ── Detail pane (middle: info + node funnel) ────────────────── */}
+      <div className="flex-1 overflow-y-auto min-w-0">
         {selected ? (
           <div className="max-w-2xl mx-auto px-6 py-6">
-            <FlowCard key={selected._id} flow={selected} onChanged={load} savedMessages={savedMessages} media={media} products={products} detail />
+            <FlowCard
+              key={selected._id} flow={selected} onChanged={load}
+              savedMessages={savedMessages} media={media} products={products}
+              tracking={tracking} trackLoading={trackLoading} trackOpen={trackOpen}
+              onToggleTracking={toggleTracking} onReloadTracking={loadTracking}
+            />
           </div>
         ) : !loading && (
           <div className="h-full flex flex-col items-center justify-center text-white/20">
@@ -754,6 +791,13 @@ export default function ActiveFlowsPanel() {
           </div>
         )}
       </div>
+
+      {/* ── People column (extreme right: per-number details) ────────── */}
+      {selected && trackOpen && (
+        <div className="w-80 shrink-0 border-l border-white/8">
+          <ParticipantsPanel tracking={tracking} loading={trackLoading} flowName={selected.name} onRefresh={loadTracking} />
+        </div>
+      )}
     </div>
   );
 }
