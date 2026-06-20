@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb';
 import getMongoClient from '@/lib/mongodb';
 import { db } from '@/db';
-import { messages, conversations } from '@/db/schema';
+import { messages, conversations, contacts } from '@/db/schema';
 import { eq, and, inArray, count } from 'drizzle-orm';
 import { sendRichTemplateMessage, sendMPMTemplateMessage, sendTextMessage, sendMediaMessage, uploadMedia } from '@/lib/whatsapp-api';
 import { getSendUrl, r2HasPublicBase } from '@/lib/inventory-media';
@@ -599,6 +599,18 @@ export async function runDueSteps(now = new Date()): Promise<{ fired: number }> 
 /* ── Flow tracking (delivery + funnel analytics) ─────────────────────────────── */
 
 export interface FunnelStep { nodeId: string; label: string; type: string; count: number }
+/** One contact and how far they travelled through the flow (their best run). */
+export interface FlowParticipant {
+  phone: string;
+  name: string;
+  reachedNodeId: string;
+  reachedLabel: string;   // label of the deepest node reached
+  depth: number;          // 1-based position along the flow spine
+  totalSteps: number;     // spine length (so "depth/totalSteps")
+  stepCount: number;      // how many advances (taps/sends) — 0 = only got the root
+  lastAt: string;         // ISO of last activity
+  status: 'active' | 'completed' | 'stopped';
+}
 export interface FlowTracking {
   sent: number;          // users the flow was launched to (one run each)
   delivered: number;     // root message confirmed delivered/read by WhatsApp
@@ -608,6 +620,7 @@ export interface FlowTracking {
   stopped: number;       // runs superseded by a newer launch
   total: number;
   funnel: FunnelStep[];  // sendable nodes (root → deeper), with how many runs reached each
+  participants: FlowParticipant[]; // each number + the deepest node it reached (deep = warm lead)
 }
 
 /**
@@ -650,8 +663,10 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
   ]).toArray();
   const reachByNode = new Map<string, number>(reachAgg.map(r => [r._id, r.count]));
 
-  // Order the funnel along the flow spine (root → deeper).
+  // Order the funnel along the flow spine (root → deeper), and build a per-contact
+  // list of how far each number reached (deepest node = their interest level).
   let funnel: FunnelStep[] = [];
+  let participants: FlowParticipant[] = [];
   try {
     const flowDoc = await flows.findOne({ _id: new ObjectId(flowId) });
     if (flowDoc) {
@@ -659,13 +674,52 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
       const roots = findRootNodes(flow);
       const rootId = (flowDoc.rootNodeId && roots.includes(flowDoc.rootNodeId)) ? flowDoc.rootNodeId : roots[0];
       if (rootId) {
-        funnel = orderedSendableNodes(flow, rootId).map(nodeId => {
+        const ordered = orderedSendableNodes(flow, rootId);
+        const posByNode = new Map<string, number>(ordered.map((id, i) => [id, i]));
+        funnel = ordered.map(nodeId => {
           const node = flow.nodes.find(n => n.id === nodeId);
           return { nodeId, label: nodeShortLabel(node), type: node?.type ?? 'node', count: reachByNode.get(nodeId) ?? 0 };
         });
+
+        // Deepest node each phone reached — keep the best run per number.
+        const allRuns = await runs
+          .find({ flowId }, { projection: { phone: 1, contactId: 1, steps: 1, status: 1, updatedAt: 1, rootNodeId: 1 } })
+          .toArray();
+        const best = new Map<string, { phone: string; contactId: string | null; depth: number; node: string; steps: number; lastAt: Date; status: string }>();
+        for (const r of allRuns as any[]) {
+          const reached = new Set<string>([r.rootNodeId, ...((r.steps || []).map((s: any) => s.toNode))]);
+          let depth = -1, node = r.rootNodeId;
+          for (const nid of reached) { const p = posByNode.get(nid); if (p !== undefined && p > depth) { depth = p; node = nid; } }
+          const steps = r.steps || [];
+          const lastAt = steps.length ? new Date(steps[steps.length - 1].at) : new Date(r.updatedAt);
+          const cur = best.get(r.phone);
+          if (!cur || depth > cur.depth) best.set(r.phone, { phone: r.phone, contactId: r.contactId ?? null, depth, node, steps: steps.length, lastAt, status: r.status });
+        }
+
+        // Resolve display names from the contacts table (by id).
+        const ids = [...best.values()].map(b => b.contactId).filter((x): x is string => !!x);
+        const nameById = new Map<string, string>();
+        if (ids.length) {
+          const rows = await db.select({ id: contacts.id, name: contacts.name }).from(contacts).where(inArray(contacts.id, ids));
+          for (const row of rows) nameById.set(row.id, row.name);
+        }
+
+        participants = [...best.values()]
+          .sort((a, b) => b.depth - a.depth || b.lastAt.getTime() - a.lastAt.getTime())
+          .map(b => ({
+            phone: b.phone,
+            name: (b.contactId && nameById.get(b.contactId)) || b.phone,
+            reachedNodeId: b.node,
+            reachedLabel: nodeShortLabel(flow.nodes.find(n => n.id === b.node)),
+            depth: b.depth + 1,
+            totalSteps: ordered.length,
+            stepCount: b.steps,
+            lastAt: b.lastAt.toISOString(),
+            status: b.status as FlowParticipant['status'],
+          }));
       }
     }
-  } catch { /* funnel is best-effort */ }
+  } catch { /* funnel/participants are best-effort */ }
 
-  return { sent: total, delivered, started, completed, active, stopped, total, funnel };
+  return { sent: total, delivered, started, completed, active, stopped, total, funnel, participants };
 }

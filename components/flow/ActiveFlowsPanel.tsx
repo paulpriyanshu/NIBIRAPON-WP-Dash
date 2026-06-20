@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, Play, Pause, Send, Loader2, Users, CheckCircle2,
   Megaphone, AlertTriangle, RefreshCw, Layers, ChevronDown, ChevronUp, X, ShoppingBag,
-  ImagePlus, Images, Trash2, BarChart3, TrendingUp, MailCheck,
+  ImagePlus, Images, Trash2, BarChart3, TrendingUp, MailCheck, Star,
 } from 'lucide-react';
 import {
   findRootNodes, getTemplate, flowParamSpecs, specNeedsConfig,
@@ -17,6 +17,24 @@ interface PickMedia { type: 'image' | 'video'; assetId?: string; url?: string }
 interface PickProduct { id: string; name: string; contentId: string | null; priceRange: string | null; parentId: string | null; media: PickMedia[] }
 function pickMediaSrc(m?: PickMedia): string { return m ? (m.assetId ? `/api/inventory/media/${m.assetId}` : (m.url ?? '')) : ''; }
 
+/** Download the flow's participants as a CSV lead list (deepest first). */
+function exportLeads(flowName: string, participants: FlowParticipant[]) {
+  const header = ['Name', 'Phone', 'Reached step', 'Total steps', 'Reached node', 'Taps', 'Status', 'Last active'];
+  const rows = participants.map(p => [
+    p.name, p.phone, String(p.depth), String(p.totalSteps), p.reachedLabel,
+    String(p.stepCount), p.status, new Date(p.lastAt).toLocaleString(),
+  ]);
+  const csv = [header, ...rows]
+    .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${flowName.replace(/[^a-z0-9]+/gi, '_')}_leads.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 interface Flow extends EngineFlow {
   _id: string;
   nodeCount?: number;
@@ -25,9 +43,15 @@ interface Flow extends EngineFlow {
 }
 interface RunStats { active: number; completed: number; stopped: number; total: number; }
 interface FunnelStep { nodeId: string; label: string; type: string; count: number }
+interface FlowParticipant {
+  phone: string; name: string; reachedNodeId: string; reachedLabel: string;
+  depth: number; totalSteps: number; stepCount: number; lastAt: string;
+  status: 'active' | 'completed' | 'stopped';
+}
 interface FlowTracking {
   sent: number; delivered: number; started: number; completed: number;
   active: number; stopped: number; total: number; funnel: FunnelStep[];
+  participants: FlowParticipant[];
 }
 
 const inputCls = 'w-full bg-[#111b21] border border-white/10 rounded-lg px-3 py-2 text-white text-xs placeholder:text-white/20 focus:outline-none focus:border-[#25D366]/50';
@@ -489,6 +513,43 @@ function FlowCard({ flow, onChanged, savedMessages, media, products }: { flow: F
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+
+                  {/* participants — who interacted & how far (deepest = warm leads) */}
+                  {tracking.participants && tracking.participants.length > 0 && (
+                    <div className="space-y-1.5 pt-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">People reached — deepest first</p>
+                        <button
+                          onClick={() => exportLeads(flow.name, tracking.participants)}
+                          className="text-[10px] text-[#25D366]/80 hover:text-[#25D366] flex items-center gap-1"
+                        >
+                          <Send size={9} /> Export CSV
+                        </button>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto rounded-lg border border-white/8 divide-y divide-white/5">
+                        {tracking.participants.map(p => {
+                          const pct = Math.round((p.depth / (p.totalSteps || 1)) * 100);
+                          const deep = p.status === 'completed' || (p.stepCount > 0 && pct >= 50);
+                          return (
+                            <div key={p.phone} className="flex items-center gap-2 px-2.5 py-1.5">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  {deep && <Star size={10} className="text-amber-300 shrink-0 fill-amber-300" />}
+                                  <span className="text-white/80 text-[11px] truncate">{p.name}</span>
+                                </div>
+                                <span className="text-white/35 text-[10px]">{p.phone}{p.stepCount === 0 && ' · no taps yet'}</span>
+                              </div>
+                              <div className="text-right shrink-0 max-w-[42%]">
+                                <span className={`text-[10px] ${deep ? 'text-[#25D366]' : 'text-white/55'}`}>Step {p.depth}/{p.totalSteps}</span>
+                                <p className="text-white/30 text-[9px] truncate">{p.reachedLabel}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-white/25 text-[9px]">★ marks people who went at least halfway — your warmest leads.</p>
                     </div>
                   )}
                 </>
