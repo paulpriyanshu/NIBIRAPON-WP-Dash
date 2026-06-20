@@ -43,14 +43,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'ok' });
   }
 
-  // Log raw payload immediately before any processing — ensures nothing is lost
-  try {
-    await db.insert(webhookEvents).values({
-      type: 'other',
-      payload: rawBody,
-      processed: false,
-    });
-  } catch { /* ignore — don't let logging block processing */ }
+  // Log raw payload — ensures nothing is lost. Kicked off but NOT awaited before
+  // processing: the audit write and the actual handling are independent, so we let
+  // them run concurrently and only await the log at the end (it must complete before
+  // the lambda freezes on response). Errors are swallowed so logging never blocks.
+  const rawLog = db.insert(webhookEvents).values({
+    type: 'other',
+    payload: rawBody,
+    processed: false,
+  }).then(() => {}, () => {});
 
   try {
     await processWebhookPayload(rawBody);
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
     } catch { /* ignore */ }
   }
 
+  await rawLog; // ensure the audit write lands before the lambda freezes
   return NextResponse.json({ status: 'ok' });
 }
 
@@ -198,22 +200,38 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     return; // reactions don't create a new message row
   }
 
-  // ── Log raw event ─────────────────────────────────────────────────────────
-  await db.insert(webhookEvents).values({
-    type: 'message_received',
-    waMessageId: msg.id,
-    fromNumber: fromPhone,
-    payload: msg,
-    processed: true,
-  });
+  // Start the reply-to lookup now so it overlaps the contact + conversation
+  // chain below instead of running serially after it. Same FK-safety logic as
+  // before: keep replyToId only if the referenced message exists in our DB,
+  // else null (broadcast messages predating this DB won't be present).
+  const replyToPromise: Promise<string | null> = msg.context?.id
+    ? db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.id, msg.context.id))
+        .limit(1)
+        .then(rows => (rows[0] ? msg.context.id : null))
+        .catch(() => null)
+    : Promise.resolve(null);
 
-  // ── Upsert contact ────────────────────────────────────────────────────────
-  // Priority 1: exact match
-  let [existingContact] = await db
-    .select()
-    .from(contacts)
-    .where(eq(contacts.phone, fromPhone))
-    .limit(1);
+  // ── Log raw event + look up the contact (independent → run concurrently) ──
+  // Priority 1: exact phone match. The audit-log write doesn't depend on the
+  // contact, so we overlap the two round-trips.
+  const [, exactContactRows] = await Promise.all([
+    db.insert(webhookEvents).values({
+      type: 'message_received',
+      waMessageId: msg.id,
+      fromNumber: fromPhone,
+      payload: msg,
+      processed: true,
+    }),
+    db
+      .select()
+      .from(contacts)
+      .where(eq(contacts.phone, fromPhone))
+      .limit(1),
+  ]);
+  let existingContact = exactContactRows[0];
 
   // Priority 2: suffix match only when exact match fails (safe to update phone then)
   if (!existingContact) {
@@ -290,18 +308,8 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   const mediaInfo    = extractMedia(msg);
   const templateData = extractTemplateData(msg);
 
-  // Only keep replyToId if the referenced message exists in our DB.
-  // Messages sent from a broadcast before this DB existed won't be present,
-  // so we null it out to avoid FK constraint violations.
-  let replyToId: string | null = null;
-  if (msg.context?.id) {
-    const [refMsg] = await db
-      .select({ id: messages.id })
-      .from(messages)
-      .where(eq(messages.id, msg.context.id))
-      .limit(1);
-    replyToId = refMsg ? msg.context.id : null;
-  }
+  // Resolve the reply-to lookup kicked off at the top of the handler.
+  const replyToId = await replyToPromise;
 
   // ── Insert message (idempotent) ───────────────────────────────────────────
   const inserted = await db.insert(messages).values({
@@ -333,10 +341,14 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
   }
 
   // ── Email notification — fire for every inbound message (any number) ──────
-  // Awaited (not fire-and-forget): on Vercel the lambda is frozen the moment the
-  // webhook responds, so a detached promise would never run. Best-effort — it
-  // never throws, so it can't block the agent reply or payment flow below.
-  await notifyIncomingMessage({
+  // Kicked off here but NOT awaited inline: the SMTP send to Gmail takes ~1-3s
+  // and the customer never sees it, so blocking the agent reply on it just makes
+  // every reply slower. Instead we run it CONCURRENTLY with the downstream work
+  // (order / agent reply) via Promise.all at each exit below. It must still be
+  // awaited before the handler returns — on Vercel the lambda freezes the moment
+  // the webhook responds, so a truly detached promise would be dropped. It never
+  // throws (best-effort), so awaiting it can't fail the message flow.
+  const emailNotify = notifyIncomingMessage({
     fromPhone,
     contactName,
     text: msgText,
@@ -345,9 +357,12 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
 
   // ── Cart / order received → capture it and send the payment option ────────
   if (msg.type === 'order') {
-    await handleCartOrder({
-      msg, fromPhone, bizPhone: phoneNumberId, contactId, conversationId,
-    }).catch(err => console.error('[order]', err));
+    await Promise.all([
+      emailNotify,
+      handleCartOrder({
+        msg, fromPhone, bizPhone: phoneNumberId, contactId, conversationId,
+      }).catch(err => console.error('[order]', err)),
+    ]);
     return; // order handled — don't run the agent on this message
   }
 
@@ -395,17 +410,20 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     // category tap → send its marketing template / custom message, else a product list.
     // Falls back to the deterministic drill-down when the agent is off.
     if ((prodTap || catTap) && conv?.agentEnabled) {
-      await agentReply({
-        conversationId, toPhone: fromPhone, bizPhone: phoneNumberId, userText: '',
-        focusProductId:  prodTap?.[1],
-        focusCategoryId: catTap?.[1],
-      }).catch(err => console.error('[agent-reply]', err));
+      await Promise.all([
+        emailNotify,
+        agentReply({
+          conversationId, toPhone: fromPhone, bizPhone: phoneNumberId, userText: '',
+          focusProductId:  prodTap?.[1],
+          focusCategoryId: catTap?.[1],
+        }).catch(err => console.error('[agent-reply]', err)),
+      ]);
       return;
     }
     const handled = await handleCustomOptionPick({
       buttonId: bid, toPhone: fromPhone, bizPhone: phoneNumberId, conversationId,
     }).catch(err => { console.error('[cmopt]', err); return false; });
-    if (handled) return;
+    if (handled) { await emailNotify; return; }
   }
 
   // The agent handles messages the customer typed (type "text") AND category
@@ -416,13 +434,21 @@ async function handleIncomingMessage(msg: any, contactProfile: any, metadata: an
     : (isListPick && !flowAdvanced ? (templateData?.buttonTitle || msgText) : null);
 
   if (conv?.agentEnabled && agentInput) {
-    await agentReply({
-      conversationId,
-      toPhone: fromPhone,
-      bizPhone: phoneNumberId,
-      userText: agentInput,
-    }).catch(err => console.error('[agent-reply]', err));
+    await Promise.all([
+      emailNotify,
+      agentReply({
+        conversationId,
+        toPhone: fromPhone,
+        bizPhone: phoneNumberId,
+        userText: agentInput,
+      }).catch(err => console.error('[agent-reply]', err)),
+    ]);
+    return;
   }
+
+  // No agent reply on this path (agent off, or a button tap a flow consumed) —
+  // still await the email so it isn't dropped when the lambda freezes.
+  await emailNotify;
 }
 
 /** One line item in a WhatsApp cart/order webhook payload. */
