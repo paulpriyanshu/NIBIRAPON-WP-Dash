@@ -202,9 +202,11 @@ function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; 
           )}
 
           {/* media header (buttons only — WhatsApp shows it above the text + buttons) */}
-          {d.type === 'buttons' && (
+          {(d.type === 'buttons' || d.type === 'list') && (
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block">Header image / video <span className="text-gray-400 normal-case font-normal">(optional)</span></label>
+              <label className="text-xs font-semibold text-gray-500 dark:text-[#8696a0] uppercase tracking-wide block">
+                {d.type === 'list' ? 'Image / video' : 'Header image / video'} <span className="text-gray-400 normal-case font-normal">(optional)</span>
+              </label>
               {d.media ? (
                 <div className="flex items-center gap-3 border border-gray-200 dark:border-[#2a3942] rounded-lg p-2">
                   <div className="w-16 h-16 rounded-md overflow-hidden bg-gray-100 dark:bg-[#1f2c34] shrink-0">
@@ -213,14 +215,15 @@ function Editor({ initial, onClose, onSaved }: { initial: CustomMessage | null; 
                       // eslint-disable-next-line @next/next/no-img-element
                       : <img src={d.media.assetId ? `/api/inventory/media/${d.media.assetId}` : d.media.url} alt="" className="w-full h-full object-cover" />}
                   </div>
-                  <span className="text-xs text-gray-500 dark:text-[#8696a0] flex-1">{d.media.type} header</span>
+                  <span className="text-xs text-gray-500 dark:text-[#8696a0] flex-1">{d.media.type}{d.type === 'list' ? ' · sent before the list' : ' header'}</span>
                   <button onClick={() => set({ media: null })} className="p-1.5 text-gray-400 hover:text-red-500"><Trash2 size={14} /></button>
                 </div>
               ) : (
                 <button onClick={() => setPicking(true)} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-[#2a3942] text-sm text-gray-500 dark:text-[#8696a0] hover:bg-gray-50 dark:hover:bg-[#1f2c34]">
-                  <ImageIcon size={14} /> Add a photo / video header
+                  <ImageIcon size={14} /> {d.type === 'list' ? 'Add a photo / video' : 'Add a photo / video header'}
                 </button>
               )}
+              {d.type === 'list' && <p className="text-[11px] text-gray-400 dark:text-[#667781]">WhatsApp lists can’t embed media, so it’s sent as its own message just before the list.</p>}
             </div>
           )}
 

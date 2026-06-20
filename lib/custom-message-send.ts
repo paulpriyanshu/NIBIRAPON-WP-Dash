@@ -85,6 +85,12 @@ export async function sendCustomMessage(to: string, m: CustomMessage): Promise<C
           }));
       const usable = sections.filter(s => s.rows.length);
       if (!usable.length) throw new Error('list message has no options');
+      // WhatsApp lists can't embed media — send any attached photo/video as its own
+      // message right before the list.
+      if (m.media && (m.media.assetId || m.media.url)) {
+        try { await sendMediaResilient(to, m.media, m.caption); }
+        catch (e) { console.error('[custom] list media send failed:', e instanceof Error ? e.message : e); }
+      }
       // WhatsApp requires a non-empty body — fall back to header/name if blank.
       const body = m.body?.trim() || m.header?.trim() || m.name;
       const res = await sendListMessage({

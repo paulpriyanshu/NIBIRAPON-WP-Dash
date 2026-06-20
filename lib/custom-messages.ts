@@ -110,6 +110,12 @@ export function cleanCustomMessage(input: any): Omit<CustomMessage, 'id' | 'crea
       : undefined;
     out.header = input?.header ? String(input.header) : undefined;
     out.footer = input?.footer ? String(input.footer) : undefined;
+    // Optional media — WhatsApp lists can't embed it, so it's sent as its own
+    // message right before the list.
+    const lmd = input?.media;
+    out.media = lmd && (lmd.assetId || lmd.url)
+      ? { type: lmd.type === 'video' ? 'video' : 'image', assetId: lmd.assetId || undefined, url: lmd.url || undefined }
+      : null;
     out.listButton = (input?.listButton ? String(input.listButton) : 'View options').slice(0, 20);
     let rowCount = 0;
     out.sections = Array.isArray(input?.sections)
