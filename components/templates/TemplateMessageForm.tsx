@@ -245,8 +245,9 @@ export default function TemplateMessageForm({ templates, initial, onClose, onSav
                           <span className="text-[9px] text-gray-400 dark:text-[#667781] uppercase tracking-wide font-semibold leading-none">Subheading</span>
                           <input
                             value={sec.title}
-                            onChange={e => setSection(i, { title: e.target.value })}
-                            placeholder="e.g. Silk Sarees, Bestsellers… (required)"
+                            onChange={e => setSection(i, { title: e.target.value.slice(0, 24) })}
+                            maxLength={24}
+                            placeholder="e.g. Silk Sarees, Bestsellers… (max 24)"
                             className="text-sm font-medium bg-transparent outline-none w-full text-[#111b21] dark:text-[#e9edef] placeholder-gray-400 dark:placeholder-[#667781]"
                           />
                         </div>

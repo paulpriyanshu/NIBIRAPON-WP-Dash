@@ -87,7 +87,10 @@ export function expandMpmSections(
 ): MPMSection[] {
   return (mpmSections ?? [])
     .map(s => ({
-      title: s.title?.trim() || 'Products',
+      // WhatsApp rejects the whole MPM template if a section title exceeds 24 chars
+      // (#131009), which then silently falls back. Clamp it so a long collection
+      // name can't fail the send.
+      title: (s.title?.trim() || 'Products').slice(0, 24),
       product_items: (s.productIds ?? '')
         .split(',')
         .map(id => ({ product_retailer_id: id.trim() }))
