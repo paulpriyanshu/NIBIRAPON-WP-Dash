@@ -11,7 +11,14 @@ import {
 } from '@/lib/flow-engine';
 import type { TemplateMessage, TemplateMessageConfig } from '@/lib/templates';
 
-interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; }
+interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; name?: string; bytes?: number; createdAt?: number; }
+/** Human file size, e.g. 6.9 MB. */
+function fmtBytes(b?: number): string {
+  if (!b || b <= 0) return '';
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1048576).toFixed(1)} MB`;
+}
 interface PickMedia { type: 'image' | 'video'; assetId?: string; url?: string }
 /** A product offered in the MPM/catalog picker — mapped to WhatsApp by its contentId. */
 interface PickProduct { id: string; name: string; contentId: string | null; priceRange: string | null; parentId: string | null; media: PickMedia[] }
@@ -95,6 +102,7 @@ function HeaderMediaField({ spec, v, patch, media }: {
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState('');
   const [showLib, setShowLib] = useState(false);
+  const [sizes, setSizes] = useState<Record<string, number>>({}); // lazily fetched file sizes
   const fileRef = useRef<HTMLInputElement>(null);
 
   const fmt = (spec.headerFormat ?? 'IMAGE').toUpperCase();
@@ -104,6 +112,19 @@ function HeaderMediaField({ spec, v, patch, media }: {
   const currentSrc = v.headerMediaAssetId ? `/api/inventory/media/${v.headerMediaAssetId}` : (v.headerMediaUrl ?? '');
   const hasMedia = !!(v.headerMediaAssetId || v.headerMediaUrl?.trim());
   const libItems = media.filter(m => m.type === previewType);
+
+  // When the library opens, fill in any sizes we don't already know (HEAD lookup).
+  useEffect(() => {
+    if (!showLib) return;
+    libItems.forEach(m => {
+      if (m.bytes || sizes[m.key]) return;
+      const q = m.assetId ? `assetId=${encodeURIComponent(m.assetId)}` : `url=${encodeURIComponent(m.url ?? '')}`;
+      fetch(`/api/media/size?${q}`).then(r => r.ok ? r.json() : null).then(d => {
+        if (d?.bytes) setSizes(s => ({ ...s, [m.key]: d.bytes }));
+      }).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLib]);
 
   const setAsset = (assetId: string) => patch(p => ({ ...p, headerMediaAssetId: assetId, headerMediaUrl: '' }));
   const setUrl   = (url: string)     => patch(p => ({ ...p, headerMediaUrl: url, headerMediaAssetId: '' }));
@@ -174,16 +195,27 @@ function HeaderMediaField({ spec, v, patch, media }: {
       {showLib && (
         libItems.length === 0
           ? <p className="text-white/30 text-[10px]">No {previewType}s in the library yet.</p>
-          : <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto p-1 bg-[#0b141a] border border-white/8 rounded-lg">
+          : <div className="max-h-48 overflow-y-auto bg-[#0b141a] border border-white/8 rounded-lg divide-y divide-white/5">
               {libItems.map(m => {
                 const selected = (!!m.assetId && m.assetId === v.headerMediaAssetId) || (!!m.url && m.url === v.headerMediaUrl);
+                const size = fmtBytes(m.bytes ?? sizes[m.key]);
+                const date = m.createdAt ? new Date(m.createdAt).toLocaleDateString() : '';
                 return (
                   <button key={m.key} onClick={() => { if (m.assetId) setAsset(m.assetId); else setUrl(m.url ?? ''); setShowLib(false); }}
-                    className={`aspect-square rounded-md overflow-hidden border-2 transition-all ${selected ? 'border-[#25D366]' : 'border-transparent hover:border-white/30'}`}>
-                    {m.type === 'video'
-                      ? <video src={m.src} className="w-full h-full object-cover" muted />
-                      // eslint-disable-next-line @next/next/no-img-element
-                      : <img src={m.src} alt="" className="w-full h-full object-cover" />}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-all ${selected ? 'bg-[#25D366]/10' : 'hover:bg-white/[0.04]'}`}>
+                    <div className={`w-9 h-9 rounded-md overflow-hidden shrink-0 border ${selected ? 'border-[#25D366]' : 'border-white/10'}`}>
+                      {m.type === 'video'
+                        ? <video src={m.src} className="w-full h-full object-cover" muted />
+                        // eslint-disable-next-line @next/next/no-img-element
+                        : <img src={m.src} alt="" className="w-full h-full object-cover" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white/80 text-[11px] truncate">{m.name || 'Untitled'}</p>
+                      <p className="text-white/35 text-[9px] truncate">
+                        {[size, date].filter(Boolean).join(' · ') || m.type}
+                      </p>
+                    </div>
+                    {selected && <CheckCircle2 size={13} className="text-[#25D366] shrink-0" />}
                   </button>
                 );
               })}
