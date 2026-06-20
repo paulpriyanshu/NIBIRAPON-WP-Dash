@@ -610,6 +610,7 @@ export interface FlowParticipant {
   stepCount: number;      // how many advances (taps/sends) — 0 = only got the root
   lastAt: string;         // ISO of last activity
   status: 'active' | 'completed' | 'stopped';
+  seen: boolean;          // root WhatsApp message was read (blue ticks)
 }
 export interface FlowTracking {
   sent: number;          // users the flow was launched to (one run each)
@@ -683,9 +684,9 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
 
         // Deepest node each phone reached — keep the best run per number.
         const allRuns = await runs
-          .find({ flowId }, { projection: { phone: 1, contactId: 1, steps: 1, status: 1, updatedAt: 1, rootNodeId: 1 } })
+          .find({ flowId }, { projection: { phone: 1, contactId: 1, steps: 1, status: 1, updatedAt: 1, rootNodeId: 1, rootMsgId: 1 } })
           .toArray();
-        const best = new Map<string, { phone: string; contactId: string | null; depth: number; node: string; steps: number; lastAt: Date; status: string }>();
+        const best = new Map<string, { phone: string; contactId: string | null; depth: number; node: string; steps: number; lastAt: Date; status: string; rootMsgId: string | null }>();
         for (const r of allRuns as any[]) {
           const reached = new Set<string>([r.rootNodeId, ...((r.steps || []).map((s: any) => s.toNode))]);
           let depth = -1, node = r.rootNodeId;
@@ -693,7 +694,7 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
           const steps = r.steps || [];
           const lastAt = steps.length ? new Date(steps[steps.length - 1].at) : new Date(r.updatedAt);
           const cur = best.get(r.phone);
-          if (!cur || depth > cur.depth) best.set(r.phone, { phone: r.phone, contactId: r.contactId ?? null, depth, node, steps: steps.length, lastAt, status: r.status });
+          if (!cur || depth > cur.depth) best.set(r.phone, { phone: r.phone, contactId: r.contactId ?? null, depth, node, steps: steps.length, lastAt, status: r.status, rootMsgId: r.rootMsgId ?? null });
         }
 
         // Resolve display names from the contacts table (by id).
@@ -702,6 +703,18 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
         if (ids.length) {
           const rows = await db.select({ id: contacts.id, name: contacts.name }).from(contacts).where(inArray(contacts.id, ids));
           for (const row of rows) nameById.set(row.id, row.name);
+        }
+
+        // "Seen" = the contact's root flow message was read (blue ticks). Batch the
+        // status lookup for every best-run root message in one query.
+        const rootMsgIds = [...best.values()].map(b => b.rootMsgId).filter((x): x is string => !!x);
+        const readByMsg = new Map<string, string>();
+        if (rootMsgIds.length) {
+          const rows = await db
+            .select({ id: messages.id, status: messages.status })
+            .from(messages)
+            .where(inArray(messages.id, rootMsgIds));
+          for (const row of rows) readByMsg.set(row.id, row.status);
         }
 
         participants = [...best.values()]
@@ -716,6 +729,7 @@ export async function getFlowTracking(flowId: string): Promise<FlowTracking> {
             stepCount: b.steps,
             lastAt: b.lastAt.toISOString(),
             status: b.status as FlowParticipant['status'],
+            seen: b.rootMsgId ? readByMsg.get(b.rootMsgId) === 'read' : false,
           }));
       }
     }

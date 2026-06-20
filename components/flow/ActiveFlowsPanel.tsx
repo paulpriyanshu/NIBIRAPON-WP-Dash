@@ -50,8 +50,12 @@ interface Flow extends EngineFlow {
 }
 interface RunStats { active: number; completed: number; stopped: number; total: number; }
 interface FunnelStep { nodeId: string; label: string; type: string; count: number }
+/** Saved custom message, trimmed to what the re-engage picker needs. */
+interface CustomMsgLite { id: string; name: string; type: string; }
+
 interface FlowParticipant {
   phone: string; name: string; reachedNodeId: string; reachedLabel: string;
+  seen: boolean;
   depth: number; totalSteps: number; stepCount: number; lastAt: string;
   status: 'active' | 'completed' | 'stopped';
 }
@@ -639,9 +643,103 @@ function FlowCard({ flow, onChanged, savedMessages, media, products, tracking, t
   );
 }
 
-/** Extreme-right column: every number that interacted and how far they reached. */
-function ParticipantsPanel({ tracking, loading, flowName, onRefresh }: { tracking: FlowTracking | null; loading: boolean; flowName: string; onRefresh: () => void }) {
+type AudienceFilter = 'all' | 'seen' | 'unseen' | 'interacted' | 'not';
+const FILTERS: { key: AudienceFilter; label: string }[] = [
+  { key: 'all',        label: 'All' },
+  { key: 'seen',       label: 'Seen' },
+  { key: 'unseen',     label: 'Unseen' },
+  { key: 'interacted', label: 'Interacted' },
+  { key: 'not',        label: 'No taps' },
+];
+function matchesFilter(p: FlowParticipant, f: AudienceFilter): boolean {
+  switch (f) {
+    case 'seen':       return p.seen;
+    case 'unseen':     return !p.seen;
+    case 'interacted': return p.stepCount > 0;
+    case 'not':        return p.stepCount === 0;
+    default:           return true;
+  }
+}
+
+/** Extreme-right column: filter participants by behaviour, select some/all, and
+ *  re-engage them — re-run the flow, or send a custom message / marketing template. */
+function ParticipantsPanel({
+  tracking, loading, flowName, onRefresh, flowId, flowLive, savedMessages, customMessages,
+}: {
+  tracking: FlowTracking | null; loading: boolean; flowName: string; onRefresh: () => void;
+  flowId: string; flowLive: boolean; savedMessages: TemplateMessage[]; customMessages: CustomMsgLite[];
+}) {
   const people = tracking?.participants ?? [];
+
+  const [filter, setFilter]   = useState<AudienceFilter>('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [action, setAction]   = useState<'flow' | 'custom' | 'template' | null>(null);
+  const [customId, setCustomId]     = useState('');
+  const [templateId, setTemplateId] = useState('');
+  const [sending, setSending] = useState(false);
+  const [result, setResult]   = useState('');
+
+  const filtered = people.filter(p => matchesFilter(p, filter));
+  // Drop any selected phones no longer in the filtered view (keeps "select all" honest).
+  const visibleSel = [...selected].filter(ph => filtered.some(p => p.phone === ph));
+  const allChecked = filtered.length > 0 && visibleSel.length === filtered.length;
+
+  const toggleOne = (phone: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(phone) ? next.delete(phone) : next.add(phone);
+    return next;
+  });
+  const toggleAll = () => setSelected(prev => {
+    const next = new Set(prev);
+    if (allChecked) filtered.forEach(p => next.delete(p.phone));
+    else filtered.forEach(p => next.add(p.phone));
+    return next;
+  });
+
+  const phones = visibleSel;
+
+  const send = async () => {
+    if (phones.length === 0 || !action) return;
+    setSending(true); setResult('');
+    try {
+      let res: Response;
+      if (action === 'flow') {
+        res = await fetch(`/api/flows/${flowId}/launch`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipients: phones }),
+        });
+      } else if (action === 'custom') {
+        if (!customId) { setResult('Pick a custom message first.'); setSending(false); return; }
+        res = await fetch(`/api/flows/${flowId}/resend`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'custom', phones, customMessageId: customId }),
+        });
+      } else {
+        const tmpl = savedMessages.find(m => m.id === templateId);
+        if (!tmpl) { setResult('Pick a template first.'); setSending(false); return; }
+        res = await fetch(`/api/flows/${flowId}/resend`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'template', phones, templateName: tmpl.templateName, language: tmpl.language, config: tmpl.config }),
+        });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setResult(data.error || `Failed (${res.status})`); }
+      else {
+        const ok = action === 'flow' ? (data.started ?? 0) : (data.sent ?? 0);
+        const total = data.total ?? phones.length;
+        const failed = (data.failures?.length ?? (total - ok)) || 0;
+        setResult(`Sent to ${ok}/${total}${failed ? ` · ${failed} failed` : ''}.`);
+        setSelected(new Set());
+        setAction(null);
+        onRefresh();
+      }
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">
@@ -659,24 +757,55 @@ function ParticipantsPanel({ tracking, loading, flowName, onRefresh }: { trackin
         </div>
       </div>
 
+      {/* Behaviour filters */}
+      {people.length > 0 && (
+        <div className="flex flex-wrap gap-1 px-3 py-2 border-b border-white/8 shrink-0">
+          {FILTERS.map(f => {
+            const n = people.filter(p => matchesFilter(p, f.key)).length;
+            const on = filter === f.key;
+            return (
+              <button key={f.key} onClick={() => setFilter(f.key)}
+                className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                  on ? 'bg-[#25D366]/15 border-[#25D366]/40 text-[#25D366]'
+                     : 'border-white/10 text-white/45 hover:text-white/70 hover:bg-white/5'}`}>
+                {f.label} <span className="opacity-60">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Select-all bar */}
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-white/8 shrink-0">
+          <input type="checkbox" checked={allChecked} onChange={toggleAll} className="accent-[#25D366]" />
+          <span className="text-white/55 text-[11px]">Select all ({filtered.length})</span>
+          {visibleSel.length > 0 && <span className="ml-auto text-[#25D366] text-[11px]">{visibleSel.length} selected</span>}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
         {loading && !tracking ? (
           <div className="flex justify-center py-8"><Loader2 size={16} className="animate-spin text-white/30" /></div>
         ) : people.length === 0 ? (
           <p className="text-white/25 text-[11px] px-4 py-6 text-center">No one has interacted yet.</p>
+        ) : filtered.length === 0 ? (
+          <p className="text-white/25 text-[11px] px-4 py-6 text-center">No one matches this filter.</p>
         ) : (
-          <>
-            <p className="text-white/25 text-[9px] px-4 pt-3 pb-2">★ went at least halfway — your warmest leads. Deepest first.</p>
-            <div className="divide-y divide-white/5">
-              {people.map(p => {
-                const pct = Math.round((p.depth / (p.totalSteps || 1)) * 100);
-                const deep = p.status === 'completed' || (p.stepCount > 0 && pct >= 50);
-                const last = new Date(p.lastAt);
-                return (
-                  <div key={p.phone} className="px-4 py-2.5 hover:bg-white/[0.02]">
+          <div className="divide-y divide-white/5">
+            {filtered.map(p => {
+              const pct = Math.round((p.depth / (p.totalSteps || 1)) * 100);
+              const deep = p.status === 'completed' || (p.stepCount > 0 && pct >= 50);
+              const last = new Date(p.lastAt);
+              const checked = selected.has(p.phone);
+              return (
+                <div key={p.phone} className="flex gap-2 px-4 py-2.5 hover:bg-white/[0.02]">
+                  <input type="checkbox" checked={checked} onChange={() => toggleOne(p.phone)} className="accent-[#25D366] mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       {deep && <Star size={11} className="text-amber-300 shrink-0 fill-amber-300" />}
                       <span className="text-white/85 text-[12px] font-medium truncate flex-1">{p.name}</span>
+                      <span className={`text-[9px] shrink-0 px-1.5 py-0.5 rounded-full ${p.seen ? 'bg-sky-500/15 text-sky-300' : 'bg-white/8 text-white/35'}`}>{p.seen ? 'seen' : 'unseen'}</span>
                       <span className={`text-[10px] shrink-0 px-1.5 py-0.5 rounded-full ${
                         p.status === 'completed' ? 'bg-[#25D366]/15 text-[#25D366]'
                         : p.status === 'active' ? 'bg-amber-500/15 text-amber-300'
@@ -694,12 +823,55 @@ function ParticipantsPanel({ tracking, loading, flowName, onRefresh }: { trackin
                       <span className="shrink-0">{p.stepCount === 0 ? 'no taps' : `${p.stepCount} taps`} · {last.toLocaleDateString()}</span>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
+
+      {/* Send / re-engage bar */}
+      {phones.length > 0 && (
+        <div className="border-t border-white/8 px-4 py-3 shrink-0 space-y-2 bg-[#0e171d]">
+          <p className="text-white/50 text-[10px]">Re-engage {phones.length} selected:</p>
+          <div className="flex gap-1">
+            {([['flow', 'Re-run flow'], ['custom', 'Custom msg'], ['template', 'Template']] as const).map(([key, label]) => (
+              <button key={key} onClick={() => { setAction(key); setResult(''); }}
+                className={`flex-1 text-[10px] px-2 py-1.5 rounded-lg border transition-colors ${
+                  action === key ? 'bg-[#25D366]/15 border-[#25D366]/40 text-[#25D366]'
+                                 : 'border-white/10 text-white/50 hover:bg-white/5'}`}>{label}</button>
+            ))}
+          </div>
+
+          {action === 'flow' && (
+            <p className="text-white/35 text-[9px]">
+              {flowLive ? 'Sends the flow’s root template again (saved params) and starts a fresh run for each.'
+                        : 'Flow must be live to re-run it.'}
+            </p>
+          )}
+          {action === 'custom' && (
+            <select value={customId} onChange={e => setCustomId(e.target.value)} className={inputCls}>
+              <option value="">Pick a custom message…</option>
+              {customMessages.map(m => <option key={m.id} value={m.id}>{m.name} ({m.type})</option>)}
+            </select>
+          )}
+          {action === 'template' && (
+            <select value={templateId} onChange={e => setTemplateId(e.target.value)} className={inputCls}>
+              <option value="">Pick a saved template…</option>
+              {savedMessages.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          )}
+
+          {action && (
+            <button onClick={send} disabled={sending || (action === 'flow' && !flowLive)}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-[#25D366] text-black font-medium hover:bg-[#22c55e] disabled:opacity-40 transition-all">
+              {sending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              Send to {phones.length} · 1/sec
+            </button>
+          )}
+          {result && <p className="text-[10px] text-white/60">{result}</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -708,6 +880,7 @@ export default function ActiveFlowsPanel() {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
   const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
+  const [customMessages, setCustomMessages] = useState<CustomMsgLite[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [products, setProducts] = useState<PickProduct[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -745,6 +918,9 @@ export default function ActiveFlowsPanel() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     fetch('/api/template-messages').then(r => r.ok ? r.json() : []).then(setSavedMessages).catch(() => {});
+    fetch('/api/custom-messages').then(r => r.ok ? r.json() : []).then((rows: CustomMsgLite[]) =>
+      setCustomMessages(Array.isArray(rows) ? rows.map(m => ({ id: m.id, name: m.name, type: m.type })) : [])
+    ).catch(() => {});
     fetch('/api/media').then(r => r.ok ? r.json() : []).then(setMedia).catch(() => {});
     fetch('/api/inventory').then(r => r.ok ? r.json() : []).then((rows: PickProduct[]) =>
       setProducts(rows.map(p => ({ id: p.id, name: p.name, contentId: p.contentId, priceRange: p.priceRange, parentId: p.parentId, media: p.media ?? [] })))
@@ -827,7 +1003,11 @@ export default function ActiveFlowsPanel() {
       {/* ── People column (extreme right: per-number details) ────────── */}
       {selected && trackOpen && (
         <div className="w-80 shrink-0 border-l border-white/8">
-          <ParticipantsPanel tracking={tracking} loading={trackLoading} flowName={selected.name} onRefresh={loadTracking} />
+          <ParticipantsPanel
+            tracking={tracking} loading={trackLoading} flowName={selected.name} onRefresh={loadTracking}
+            flowId={selected._id} flowLive={selected.status === 'live'}
+            savedMessages={savedMessages} customMessages={customMessages}
+          />
         </div>
       )}
     </div>
