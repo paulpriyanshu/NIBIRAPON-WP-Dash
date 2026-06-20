@@ -281,7 +281,7 @@ function ProductMultiSelect({ products, value, onChange }: { products: PickProdu
   );
 }
 
-function FlowCard({ flow, onChanged, savedMessages, media, products }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[]; products: PickProduct[] }) {
+function FlowCard({ flow, onChanged, savedMessages, media, products, detail }: { flow: Flow; onChanged: () => void; savedMessages: TemplateMessage[]; media: MediaItem[]; products: PickProduct[]; detail?: boolean }) {
   const roots = findRootNodes(flow);
   const specs = flowParamSpecs(flow);
   const isLive = flow.status === 'live';
@@ -299,7 +299,7 @@ function FlowCard({ flow, onChanged, savedMessages, media, products }: { flow: F
   const [launching, setLaunching]   = useState(false);
   const [result, setResult]         = useState('');
 
-  const [trackOpen, setTrackOpen]     = useState(false);
+  const [trackOpen, setTrackOpen]     = useState(!!detail);
   const [tracking, setTracking]       = useState<FlowTracking | null>(null);
   const [trackLoading, setTrackLoading] = useState(false);
 
@@ -324,6 +324,8 @@ function FlowCard({ flow, onChanged, savedMessages, media, products }: { flow: F
       return !o;
     });
   };
+  // In the detail pane, load tracking automatically so all info shows at once.
+  useEffect(() => { if (detail) loadTracking(); }, [detail, loadTracking]);
 
   const openModal = () => {
     setErr('');
@@ -663,11 +665,17 @@ export default function ActiveFlowsPanel() {
   const [savedMessages, setSavedMessages] = useState<TemplateMessage[]>([]);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [products, setProducts] = useState<PickProduct[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const res = await fetch('/api/flows');
-    if (res.ok) setFlows(await res.json());
+    if (res.ok) {
+      const list: Flow[] = await res.json();
+      setFlows(list);
+      // Keep the current selection if it still exists, else select the first flow.
+      setSelectedId(prev => (prev && list.some(f => f._id === prev)) ? prev : (list[0]?._id ?? null));
+    }
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -680,43 +688,69 @@ export default function ActiveFlowsPanel() {
   }, []);
 
   const liveCount = flows.filter(f => f.status === 'live').length;
+  const selected = flows.find(f => f._id === selectedId) ?? null;
 
   return (
-    <div className="h-full overflow-y-auto bg-[#0b141a] px-6 py-6">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-center justify-between mb-1">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-[#25D366]/15 rounded-xl flex items-center justify-center">
-              <Radio size={18} className="text-[#25D366]" />
+    <div className="h-full flex bg-[#0b141a]">
+      {/* ── Master list ─────────────────────────────────────────────── */}
+      <div className="w-72 shrink-0 border-r border-white/8 flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-white/8">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 bg-[#25D366]/15 rounded-lg flex items-center justify-center shrink-0">
+              <Radio size={15} className="text-[#25D366]" />
             </div>
-            <div>
-              <h1 className="text-white font-bold text-lg">Active Flows</h1>
-              <p className="text-white/40 text-xs">{liveCount} live · {flows.length} total</p>
+            <div className="min-w-0">
+              <h1 className="text-white font-bold text-sm leading-tight">Active Flows</h1>
+              <p className="text-white/40 text-[10px]">{liveCount} live · {flows.length} total</p>
             </div>
           </div>
-          <button onClick={load} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border border-white/15 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-all">
-            <RefreshCw size={12} /> Refresh
+          <button onClick={load} title="Refresh" className="p-2 rounded-lg border border-white/12 bg-white/5 text-white/50 hover:text-white hover:bg-white/10 transition-all shrink-0">
+            <RefreshCw size={12} />
           </button>
         </div>
 
-        <div className="bg-[#111b21] border border-white/8 rounded-xl px-4 py-3 flex gap-2 my-4">
-          <CheckCircle2 size={13} className="text-[#25D366]/60 shrink-0 mt-0.5" />
-          <p className="text-white/40 text-[11px] leading-relaxed">
-            <strong className="text-white/60">Launch</strong> opens a modal to fill the parameters for every template the flow uses, then <strong className="text-white/60">Broadcast root template</strong> to the contacts you choose. Quick-reply taps drive the rest. Live-flow templates are locked from independent broadcast.
-          </p>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {loading ? (
+            [...Array(4)].map((_, i) => <div key={i} className="h-14 bg-[#1f2c34] rounded-lg animate-pulse" />)
+          ) : flows.length === 0 ? (
+            <div className="text-center py-16 text-white/20 px-4">
+              <Radio size={28} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No flows yet</p>
+              <p className="text-xs mt-1 text-white/15">Build one in the Builder tab first</p>
+            </div>
+          ) : (
+            flows.map(f => {
+              const live = f.status === 'live';
+              const sel = f._id === selectedId;
+              return (
+                <button key={f._id} onClick={() => setSelectedId(f._id)}
+                  className={`w-full text-left rounded-lg px-3 py-2.5 border transition-all ${sel ? 'bg-[#1f2c34] border-[#25D366]/40' : 'border-transparent hover:bg-white/[0.04]'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${live ? 'bg-[#25D366] animate-pulse' : 'bg-white/20'}`} />
+                    <p className="text-white text-[13px] font-medium truncate flex-1">{f.name}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-1 pl-3.5 text-white/30 text-[10px]">
+                    <span className={live ? 'text-[#25D366]/80' : 'text-white/40'}>{live ? 'Live' : 'Draft'}</span>
+                    <span>·</span>
+                    <span>{f.nodeCount ?? f.nodes?.length ?? 0} nodes</span>
+                  </div>
+                </button>
+              );
+            })
+          )}
         </div>
+      </div>
 
-        {loading ? (
-          [...Array(3)].map((_, i) => <div key={i} className="h-20 bg-[#1f2c34] rounded-xl animate-pulse mb-3" />)
-        ) : flows.length === 0 ? (
-          <div className="text-center py-16 text-white/20">
-            <Radio size={32} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">No flows yet</p>
-            <p className="text-xs mt-1 text-white/15">Build one in the Builder tab first</p>
+      {/* ── Detail pane ─────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto">
+        {selected ? (
+          <div className="max-w-2xl mx-auto px-6 py-6">
+            <FlowCard key={selected._id} flow={selected} onChanged={load} savedMessages={savedMessages} media={media} products={products} detail />
           </div>
-        ) : (
-          <div className="space-y-3">
-            {flows.map(f => <FlowCard key={f._id} flow={f} onChanged={load} savedMessages={savedMessages} media={media} products={products} />)}
+        ) : !loading && (
+          <div className="h-full flex flex-col items-center justify-center text-white/20">
+            <Radio size={36} className="mb-3 opacity-30" />
+            <p className="text-sm">Select a flow to see its details &amp; tracking</p>
           </div>
         )}
       </div>
