@@ -89,6 +89,17 @@ export async function objectSize(key: string): Promise<number | null> {
   }
 }
 
+/** Read a byte range [start, start+length) of a stored object. */
+export async function getObjectRange(key: string, start: number, length: number): Promise<Uint8Array | null> {
+  try {
+    const end = start + length - 1;
+    const r = await client().send(new GetObjectCommand({ Bucket: BUCKET, Key: key, Range: `bytes=${start}-${end}` }));
+    return r.Body ? await r.Body.transformToByteArray() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * An absolute, publicly-fetchable URL for an object — used both to render
  * previews and as the link WhatsApp fetches when the agent sends media.

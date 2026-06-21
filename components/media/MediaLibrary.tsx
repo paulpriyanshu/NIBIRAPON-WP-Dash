@@ -5,7 +5,7 @@ import {
   Images, Film, ImageIcon, X, ChevronLeft, ChevronRight,
   Package, Tags, GitBranch, Play, Upload, Loader2, AlertTriangle,
 } from 'lucide-react';
-import { formatBytes, fetchMediaSize, inspectVideo } from './mediaUtils';
+import { formatBytes, fetchMediaSize, inspectVideo, fetchVideoCheck } from './mediaUtils';
 
 interface MediaUsage { kind: 'product' | 'category' | 'flow'; label: string; href: string; }
 interface MediaItem { key: string; type: 'image' | 'video'; src: string; assetId?: string; url?: string; name?: string; bytes?: number; description?: string; usages: MediaUsage[]; }
@@ -25,8 +25,26 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
   const [error, setError] = useState('');
   const [warnings, setWarnings] = useState<{ name: string; issues: string[] }[]>([]);
   const [sizes, setSizes] = useState<Record<string, number | null>>({});
+  const [checks, setChecks] = useState<Record<string, { ok: boolean; warnings: string[] }>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+
+  // Inspect existing library videos (one at a time, server-side ranged read) and
+  // flag those that may not play on WhatsApp/Android.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const m of items) {
+        if (m.type !== 'video' || checks[m.key]) continue;
+        const c = await fetchVideoCheck(m);
+        if (cancelled) return;
+        if (c) setChecks(prev => ({ ...prev, [m.key]: { ok: c.ok, warnings: c.warnings } }));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+  const flaggedCount = items.filter(m => m.type === 'video' && checks[m.key] && !checks[m.key].ok).length;
 
   // Lazily resolve a media item's size (server lookup) the first time it's hovered.
   const ensureSize = useCallback((m: MediaItem) => {
@@ -134,7 +152,10 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
           </div>
           <div className="flex-1 min-w-0">
             <h1 className="text-white font-bold text-lg">Media</h1>
-            <p className="text-white/40 text-xs">{items.length} file{items.length !== 1 ? 's' : ''} · {imgCount} image{imgCount !== 1 ? 's' : ''} · {vidCount} video{vidCount !== 1 ? 's' : ''}</p>
+            <p className="text-white/40 text-xs">
+              {items.length} file{items.length !== 1 ? 's' : ''} · {imgCount} image{imgCount !== 1 ? 's' : ''} · {vidCount} video{vidCount !== 1 ? 's' : ''}
+              {flaggedCount > 0 && <span className="text-amber-400"> · {flaggedCount} may not play on Android</span>}
+            </p>
           </div>
           <input ref={fileRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => uploadFiles(e.target.files)} />
           <button onClick={() => fileRef.current?.click()} disabled={uploading > 0}
@@ -215,6 +236,12 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
                 <span className="absolute top-1.5 right-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-black/55 text-white/80 flex items-center gap-0.5">
                   {m.type === 'video' ? <Film size={9} /> : <ImageIcon size={9} />}
                 </span>
+                {m.type === 'video' && checks[m.key] && !checks[m.key].ok && (
+                  <span className="absolute top-1.5 left-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/90 text-black flex items-center gap-0.5 font-semibold"
+                    title="May not play on Android — click to see why">
+                    <AlertTriangle size={9} /> Android
+                  </span>
+                )}
               </button>
             );})}
           </div>
@@ -259,6 +286,17 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
                   : <span className="text-white/30 text-xs">size…</span>}
               </div>
               {current.description && <p className="text-white/70 text-sm">{current.description}</p>}
+              {current.type === 'video' && checks[current.key] && !checks[current.key].ok && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                  <p className="text-amber-300 text-[12px] font-medium flex items-center gap-1.5"><AlertTriangle size={13} /> May not play on Android</p>
+                  <ul className="list-disc pl-5 text-amber-200/70 text-[11px] mt-1.5 space-y-0.5">
+                    {checks[current.key].warnings.map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                  <p className="text-amber-200/45 text-[10px] mt-2 font-mono break-all">
+                    Fix: ffmpeg -i in.mp4 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart out.mp4
+                  </p>
+                </div>
+              )}
               <div>
                 <p className="text-white/35 text-[10px] uppercase tracking-wider mb-1.5">Used in {current.usages.length} place{current.usages.length !== 1 ? 's' : ''}</p>
                 {current.usages.length === 0 ? (
