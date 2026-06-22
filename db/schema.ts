@@ -411,6 +411,9 @@ export const categories = pgTable('categories', {
   description:    text('description'),
   imageUrl:       text('image_url'),       // pasted public URL
   imageAssetId:   text('image_asset_id'),  // R2 key (served via /api/inventory/media)
+  // Self-reference for subcategories (e.g. "Mul Cotton" nested under "Saree").
+  // Null = top-level category.
+  parentId:       uuid('parent_id').references((): any => categories.id, { onDelete: 'set null' }),
   sortOrder:      integer('sort_order').notNull().default(0),
   inAgentContext: boolean('in_agent_context').notNull().default(true),
   // Master kill switch: when true the category is hidden everywhere customer-facing
@@ -421,6 +424,7 @@ export const categories = pgTable('categories', {
 }, (t) => [
   uniqueIndex('categories_name_idx').on(t.name),
   index('categories_sort_idx').on(t.sortOrder),
+  index('categories_parent_idx').on(t.parentId),
 ]);
 
 export const catalogProducts = pgTable('catalog_products', {

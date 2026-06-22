@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
       id:          c.id,
       name:        c.name,
       description: c.description,
+      parentId:    c.parentId,
       sortOrder:   c.sortOrder,
       image:       (c.imageAssetId || c.imageUrl)
         ? publicMediaUrl(origin, { assetId: c.imageAssetId, url: c.imageUrl })

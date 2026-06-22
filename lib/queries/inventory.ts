@@ -97,6 +97,29 @@ export async function getAllCategories() {
   return db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.name));
 }
 
+/**
+ * Categories shown to CUSTOMERS (agent browse lists, flow dynamic lists, drill-down).
+ * These are the actual product buckets: non-hidden "leaf" categories (not a parent
+ * of any other category) that have at least one active product. This deliberately
+ * excludes grouping parents like "Saree" (which has subcategories) and empty parents
+ * like "Kurti"/"Coordset", so the customer experience is unchanged by the hierarchy.
+ */
+export async function getCustomerCategories() {
+  const [cats, prodRows] = await Promise.all([
+    db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.name)),
+    db.select({ categoryId: catalogProducts.categoryId, isActive: catalogProducts.isActive }).from(catalogProducts),
+  ]);
+  const parentCatIds = new Set(cats.map(c => c.parentId).filter(Boolean) as string[]);
+  const withProducts = new Set<string>();
+  for (const p of prodRows) if (p.isActive && p.categoryId) withProducts.add(p.categoryId);
+  return cats.filter(c => {
+    if (c.hidden) return false;
+    if (parentCatIds.has(c.id)) return false; // a grouping category (e.g. "Saree") — drill via its children
+    if (c.parentId) return true;              // a subcategory leaf — always shown (unchanged behavior)
+    return withProducts.has(c.id);            // a top-level leaf — only once it has products (hides empty "Kurti"/"Coordset")
+  });
+}
+
 /* ── Public storefront queries ───────────────────────────────────────────────
  * Read-only views for the public catalog API. Only active products/variants, and
  * none of the internal-only columns (customInfo, inAgentContext, embedding…).
@@ -198,6 +221,7 @@ export async function getPublicCategories() {
       imageUrl:     categories.imageUrl,
       imageAssetId: categories.imageAssetId,
       sortOrder:    categories.sortOrder,
+      parentId:     categories.parentId,
     })
     .from(categories)
     .where(eq(categories.hidden, false))

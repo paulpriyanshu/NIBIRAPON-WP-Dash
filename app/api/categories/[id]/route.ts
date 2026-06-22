@@ -10,7 +10,7 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await req.json();
-    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext, hidden } = body;
+    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext, hidden, parentId } = body;
 
     await db
       .update(categories)
@@ -19,6 +19,8 @@ export async function PATCH(
         ...(description    !== undefined && { description: description || null }),
         ...(imageUrl       !== undefined && { imageUrl: imageUrl || null }),
         ...(imageAssetId   !== undefined && { imageAssetId: imageAssetId || null }),
+        // Never let a category be its own parent (would create a cycle).
+        ...(parentId       !== undefined && { parentId: parentId && parentId !== id ? parentId : null }),
         ...(sortOrder      !== undefined && { sortOrder: Number(sortOrder) || 0 }),
         ...(inAgentContext !== undefined && { inAgentContext: !!inAgentContext }),
         ...(hidden         !== undefined && { hidden: !!hidden }),

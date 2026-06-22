@@ -2,7 +2,7 @@ import { sendTextMessage, sendInteractiveMessage, sendListMessage } from '@/lib/
 import { sendMediaResilient } from '@/lib/media-send';
 import { getSendUrl } from '@/lib/inventory-media';
 import { customMessageOptions, type CustomMessage, type CustomMessageMedia } from '@/lib/custom-messages';
-import { getAllCategories, getAllInventory } from '@/lib/queries/inventory';
+import { getAllCategories, getCustomerCategories, getAllInventory } from '@/lib/queries/inventory';
 
 /** Resolve a custom-message media item to a header WhatsApp can fetch (image/video). */
 async function mediaHeader(m: CustomMessageMedia | null | undefined): Promise<{ type: 'image' | 'video'; link: string } | undefined> {
@@ -22,7 +22,10 @@ function pickByIds<T extends { id: string }>(items: T[], ids?: string[]): T[] {
 
 async function dynamicRows(source: 'categories' | 'products', limit: number, ids?: string[]): Promise<{ id: string; title: string; description?: string }[]> {
   if (source === 'categories') {
-    const cats = pickByIds((await getAllCategories()).filter(c => !c.hidden), ids);
+    // Explicit picks (optionIds) honour any non-hidden category; otherwise default
+    // to the customer-facing leaf categories (excludes grouping parents like "Saree").
+    const base = ids?.length ? (await getAllCategories()).filter(c => !c.hidden) : await getCustomerCategories();
+    const cats = pickByIds(base, ids);
     return cats.slice(0, limit).map(c => ({ id: `cmopt:category:${c.id}`, title: c.name.slice(0, 24), description: c.description ?? undefined }));
   }
   // When specific products are picked, honour them (including variants); otherwise

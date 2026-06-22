@@ -14,7 +14,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext, hidden } = body;
+    const { name, description, imageUrl, imageAssetId, sortOrder, inAgentContext, hidden, parentId } = body;
 
     if (!name?.trim()) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
@@ -27,6 +27,7 @@ export async function POST(req: NextRequest) {
         description:    description  || null,
         imageUrl:       imageUrl     || null,
         imageAssetId:   imageAssetId || null,
+        parentId:       parentId     || null,
         sortOrder:      Number.isFinite(sortOrder) ? sortOrder : 0,
         inAgentContext: inAgentContext === undefined ? true : !!inAgentContext,
         hidden:         !!hidden,

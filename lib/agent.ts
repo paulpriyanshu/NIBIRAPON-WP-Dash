@@ -1,7 +1,8 @@
 import OpenAI from 'openai';
 import { db } from '@/db';
 import { agentSettings, catalogProducts, categories as categoriesTable, type ProductMedia } from '@/db/schema';
-import { eq, and, isNull, asc, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { getCustomerCategories } from '@/lib/queries/inventory';
 import { agentDraftsColl, templateMessagesColl, toObjectId, getTemplateAgentMetaMap } from '@/lib/template-store';
 import type { TemplateMessageConfig } from '@/lib/templates';
 import { customMessagesColl, serializeCustomMessage } from '@/lib/custom-message-store';
@@ -198,16 +199,12 @@ async function getContextData(userMessage: string, focusProductId?: string, focu
     db.select().from(agentSettings).limit(1).then(r => r[0]),
     agentDraftsColl().then(c => c.find({ isActive: true }).toArray()).catch(() => []),
     getRelevantProducts(userMessage).catch(() => [] as ProductRow[]),
-    db.select({
-        id:           categoriesTable.id,
-        name:         categoriesTable.name,
-        description:  categoriesTable.description,
-        imageUrl:     categoriesTable.imageUrl,
-        imageAssetId: categoriesTable.imageAssetId,
-      })
-      .from(categoriesTable)
-      .where(and(eq(categoriesTable.inAgentContext, true), eq(categoriesTable.hidden, false)))
-      .orderBy(asc(categoriesTable.sortOrder), asc(categoriesTable.name))
+    // Customer-facing leaf categories (excludes grouping parents like "Saree"),
+    // further limited to those the admin exposes to the agent.
+    getCustomerCategories()
+      .then(cs => cs.filter(c => c.inAgentContext).map(c => ({
+        id: c.id, name: c.name, description: c.description, imageUrl: c.imageUrl, imageAssetId: c.imageAssetId,
+      })) as AgentCategory[])
       .catch(() => [] as AgentCategory[]),
     customMessagesColl().then(c => c.find({ isActive: true }).sort({ updatedAt: -1 }).toArray()).catch(() => []),
   ]);

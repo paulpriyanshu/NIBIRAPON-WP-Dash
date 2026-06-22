@@ -21,12 +21,13 @@ export interface Category {
   description: string | null;
   imageUrl: string | null;
   imageAssetId: string | null;
+  parentId: string | null;
   sortOrder: number;
   inAgentContext: boolean;
   hidden: boolean;
 }
 
-const EMPTY = { name: '', description: '', image: null as SingleImage | null, inAgentContext: true, hidden: false };
+const EMPTY = { name: '', description: '', image: null as SingleImage | null, parentId: '' as string, inAgentContext: true, hidden: false };
 type CategoryForm = typeof EMPTY;
 
 function toImage(c: Pick<Category, 'imageAssetId' | 'imageUrl'>): SingleImage | null {
@@ -35,11 +36,12 @@ function toImage(c: Pick<Category, 'imageAssetId' | 'imageUrl'>): SingleImage | 
   return null;
 }
 
-function CategoryFormCard({ initial, onSave, onCancel, loading }: {
+function CategoryFormCard({ initial, onSave, onCancel, loading, parentOptions }: {
   initial?: Partial<CategoryForm>;
   onSave: (data: CategoryForm) => Promise<void>;
   onCancel: () => void;
   loading: boolean;
+  parentOptions: Category[];   // categories that can be chosen as a parent (excludes self)
 }) {
   const [form, setForm] = useState<CategoryForm>({ ...EMPTY, ...initial });
 
@@ -49,6 +51,14 @@ function CategoryFormCard({ initial, onSave, onCancel, loading }: {
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Name *</label>
         <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
           placeholder="e.g. Banarasi Silk" className={inputCls} />
+      </div>
+      <div>
+        <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Parent category</label>
+        <select value={form.parentId} onChange={e => setForm(f => ({ ...f, parentId: e.target.value }))} className={inputCls}>
+          <option value="">— None (top-level) —</option>
+          {parentOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <p className="text-white/25 text-[10px] mt-1">Make this a subcategory (e.g. nest under “Saree”). Leave as top-level for a main category.</p>
       </div>
       <div>
         <label className="text-white/40 text-[10px] uppercase tracking-wider mb-1 block">Description</label>
@@ -114,11 +124,31 @@ export default function CategoriesPanel({ categories, onChange }: {
   }
   const selected = categories.find(c => c.id === selectedId) ?? null;
 
+  // Order the list as a 2-level tree: each top-level category followed by its
+  // subcategories (indented). Orphans (parent missing) render at the top level.
+  const childrenByParent = new Map<string, Category[]>();
+  for (const c of categories) {
+    if (c.parentId && categories.some(p => p.id === c.parentId)) {
+      const a = childrenByParent.get(c.parentId) ?? [];
+      a.push(c); childrenByParent.set(c.parentId, a);
+    }
+  }
+  const tops = categories.filter(c => !c.parentId || !categories.some(p => p.id === c.parentId));
+  const ordered: { c: Category; indent: boolean }[] = [];
+  for (const t of tops) {
+    ordered.push({ c: t, indent: false });
+    for (const ch of (childrenByParent.get(t.id) ?? [])) ordered.push({ c: ch, indent: true });
+  }
+  // Roll subcategory product counts up to their parent (a parent has no direct products).
+  const countFor = (c: Category) =>
+    (byCategory.get(c.id) ?? []).length + (childrenByParent.get(c.id) ?? []).reduce((n, ch) => n + (byCategory.get(ch.id) ?? []).length, 0);
+
   const payload = (data: CategoryForm) => ({
     name:           data.name,
     description:    data.description,
     imageUrl:       data.image?.url     ?? null,
     imageAssetId:   data.image?.assetId ?? null,
+    parentId:       data.parentId || null,
     inAgentContext: data.inAgentContext,
     hidden:         data.hidden,
   });
@@ -160,15 +190,17 @@ export default function CategoriesPanel({ categories, onChange }: {
               <Tags size={28} className="mx-auto mb-3 opacity-30" />
               <p className="text-sm">No categories yet</p>
             </div>
-          ) : categories.map(c => {
-            const prods = byCategory.get(c.id) ?? [];
+          ) : ordered.map(({ c, indent }) => {
+            const count = countFor(c);
+            const hasChildren = (childrenByParent.get(c.id) ?? []).length > 0;
             const isSel = selectedId === c.id && !showForm && !editId;
             return (
               <button key={c.id}
                 onClick={() => { setSelectedId(c.id); setShowForm(false); setEditId(null); }}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 text-left border-l-2 transition-colors ${
+                className={`w-full flex items-center gap-2.5 py-2 pr-3 text-left border-l-2 transition-colors ${indent ? 'pl-7' : 'pl-3'} ${
                   isSel ? 'bg-[#25D366]/10 border-[#25D366]' : 'border-transparent hover:bg-white/5'
                 }`}>
+                {indent && <span className="text-white/20 text-xs -ml-3 shrink-0">↳</span>}
                 <div className="w-9 h-9 rounded-md overflow-hidden bg-white/5 shrink-0 flex items-center justify-center">
                   {imageSrc(toImage(c))
                     // eslint-disable-next-line @next/next/no-img-element
@@ -178,9 +210,12 @@ export default function CategoriesPanel({ categories, onChange }: {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <p className={`text-xs font-medium truncate ${c.hidden ? 'text-white/40 line-through' : isSel ? 'text-white' : 'text-white/85'}`}>{c.name}</p>
+                    {hasChildren && <span className="text-[8px] uppercase tracking-wide bg-white/10 text-white/40 px-1 py-0.5 rounded shrink-0">main</span>}
                     {c.hidden ? <EyeOff size={11} className="text-red-400/70 shrink-0" /> : c.inAgentContext && <Bot size={11} className="text-[#25D366] shrink-0" />}
                   </div>
-                  <p className="text-white/30 text-[10px] mt-0.5">{prods.length} product{prods.length !== 1 ? 's' : ''}</p>
+                  <p className="text-white/30 text-[10px] mt-0.5">
+                    {hasChildren ? `${(childrenByParent.get(c.id) ?? []).length} subcategor${(childrenByParent.get(c.id) ?? []).length !== 1 ? 'ies' : 'y'} · ` : ''}{count} product{count !== 1 ? 's' : ''}
+                  </p>
                 </div>
               </button>
             );
@@ -193,16 +228,17 @@ export default function CategoriesPanel({ categories, onChange }: {
         {showForm ? (
           <div className="max-w-2xl mx-auto p-6 space-y-4">
             <h2 className="text-white font-semibold text-sm">New category</h2>
-            <CategoryFormCard onSave={addCategory} onCancel={() => setShowForm(false)} loading={saving} />
+            <CategoryFormCard onSave={addCategory} onCancel={() => setShowForm(false)} loading={saving} parentOptions={categories} />
           </div>
         ) : editId && selected ? (
           <div className="max-w-2xl mx-auto p-6 space-y-4">
             <h2 className="text-white font-semibold text-sm">Edit “{selected.name}”</h2>
             <CategoryFormCard
-              initial={{ name: selected.name, description: selected.description ?? '', image: toImage(selected), inAgentContext: selected.inAgentContext, hidden: selected.hidden }}
+              initial={{ name: selected.name, description: selected.description ?? '', image: toImage(selected), parentId: selected.parentId ?? '', inAgentContext: selected.inAgentContext, hidden: selected.hidden }}
               onSave={data => updateCategory(selected.id, data)}
               onCancel={() => setEditId(null)}
               loading={saving}
+              parentOptions={categories.filter(c => c.id !== selected.id)}
             />
           </div>
         ) : selected ? (
