@@ -60,7 +60,9 @@ function MediaManager({ media, onChange }: {
   const [urlValue, setUrlValue]   = useState('');
   const [urlType,  setUrlType]    = useState<'image' | 'video'>('image');
   const [error,    setError]      = useState('');
+  const [dragging, setDragging]   = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
 
   const update = (i: number, patch: Partial<ProductMedia>) =>
     onChange(media.map((m, idx) => idx === i ? { ...m, ...patch } : m));
@@ -111,6 +113,25 @@ function MediaManager({ media, onChange }: {
     setUrlValue('');
   };
 
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragging(true);
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); }
+  };
+  const onDrop = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    onFiles(e.dataTransfer.files);
+  };
+
   return (
     <div className="space-y-3">
       {/* existing media */}
@@ -150,21 +171,25 @@ function MediaManager({ media, onChange }: {
         </div>
       )}
 
-      {/* upload */}
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          ref={fileRef} type="file" accept="image/*,video/*" multiple hidden
-          onChange={e => onFiles(e.target.files)}
-        />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={uploading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-white/15 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-40 transition-all"
-        >
-          {uploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-          {uploading ? 'Uploading…' : 'Upload photo / video'}
-        </button>
+      {/* upload — click the button or drag files onto the zone */}
+      <input
+        ref={fileRef} type="file" accept="image/*,video/*" multiple hidden
+        onChange={e => onFiles(e.target.files)}
+      />
+      <div
+        onDragEnter={onDragEnter}
+        onDragOver={e => { if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault(); }}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        onClick={() => !uploading && fileRef.current?.click()}
+        className={`flex flex-col items-center justify-center gap-1.5 px-3 py-5 rounded-lg border border-dashed text-xs font-medium cursor-pointer transition-all ${
+          dragging
+            ? 'border-[#25D366] bg-[#25D366]/10 text-[#25D366]'
+            : 'border-white/15 bg-white/5 text-white/60 hover:text-white hover:bg-white/10'
+        } ${uploading ? 'opacity-40 pointer-events-none' : ''}`}
+      >
+        {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+        {uploading ? 'Uploading…' : dragging ? 'Drop files to upload' : 'Drag & drop or click to upload photo / video'}
       </div>
 
       {/* paste url */}
