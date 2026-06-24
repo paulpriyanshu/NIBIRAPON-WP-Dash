@@ -639,7 +639,14 @@ export default function InventoryPage({ initialItems = [], initialCursor = null 
                     </h2>
                     <ProductFormCard
                       key={`nv-${selection.parentId}`}
-                      initial={{ parentId: selection.parentId, categoryId: findProduct(selection.parentId)?.categoryId ?? '' }}
+                      initial={(() => {
+                        const parent = findProduct(selection.parentId);
+                        // pre-fill every box from the selected product so the user
+                        // only tweaks what differs for this variant
+                        return parent
+                          ? { ...variantInitial(parent), parentId: selection.parentId }
+                          : { parentId: selection.parentId };
+                      })()}
                       lockParentName={selection.parentName}
                       onSave={addProduct}
                       onCancel={() => setSelection(null)}
