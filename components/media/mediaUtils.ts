@@ -27,10 +27,10 @@ export async function inspectVideo(file: File): Promise<VideoCheck> {
 
 /** Inspect an already-uploaded library video via the server (ranged R2 read), cached. */
 const checkCache = new Map<string, VideoCheck>();
-export async function fetchVideoCheck(item: { assetId?: string; url?: string }): Promise<VideoCheck | null> {
+export async function fetchVideoCheck(item: { assetId?: string; url?: string }, force = false): Promise<VideoCheck | null> {
   const key = item.assetId || item.url;
   if (!key) return null;
-  if (checkCache.has(key)) return checkCache.get(key)!;
+  if (!force && checkCache.has(key)) return checkCache.get(key)!;
   try {
     const q = item.assetId ? `assetId=${encodeURIComponent(item.assetId)}` : `url=${encodeURIComponent(item.url!)}`;
     const res = await fetch(`/api/media/inspect?${q}`);

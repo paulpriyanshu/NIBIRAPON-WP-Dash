@@ -89,6 +89,21 @@ export async function objectSize(key: string): Promise<number | null> {
   }
 }
 
+/** Read a whole stored object's bytes. */
+export async function getObject(key: string): Promise<Uint8Array | null> {
+  try {
+    const r = await client().send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+    return r.Body ? await r.Body.transformToByteArray() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Overwrite an EXISTING object key in place (keeps every reference to it valid). */
+export async function putObjectAtKey(key: string, bytes: Uint8Array, mimeType: string): Promise<void> {
+  await client().send(new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: bytes, ContentType: mimeType }));
+}
+
 /** Read a byte range [start, start+length) of a stored object. */
 export async function getObjectRange(key: string, start: number, length: number): Promise<Uint8Array | null> {
   try {

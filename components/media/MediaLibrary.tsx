@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import {
   Images, Film, ImageIcon, X, ChevronLeft, ChevronRight,
-  Package, Tags, GitBranch, Play, Upload, Loader2, AlertTriangle,
+  Package, Tags, GitBranch, Play, Upload, Loader2, AlertTriangle, Wand2,
 } from 'lucide-react';
 import { formatBytes, fetchMediaSize, inspectVideo, fetchVideoCheck } from './mediaUtils';
 
@@ -26,8 +26,43 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
   const [warnings, setWarnings] = useState<{ name: string; issues: string[] }[]>([]);
   const [sizes, setSizes] = useState<Record<string, number | null>>({});
   const [checks, setChecks] = useState<Record<string, { ok: boolean; warnings: string[] }>>({});
+  const [convertAvail, setConvertAvail] = useState(false); // ffmpeg conversion only works locally
+  const [converting, setConverting] = useState<string | null>(null);
+  const [convertErr, setConvertErr] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+
+  // Conversion runs ffmpeg, which only exists when the dashboard runs locally.
+  useEffect(() => {
+    fetch('/api/media/convert').then(r => r.ok ? r.json() : { available: false }).then(d => setConvertAvail(!!d.available)).catch(() => {});
+  }, []);
+
+  // Re-encode a flagged video to a WhatsApp-safe MP4 (overwrites it in place), then
+  // re-check it so the badge clears. Local only.
+  const convertVideo = useCallback(async (m: MediaItem) => {
+    if (!m.assetId) { setConvertErr('Only uploaded library videos can be converted.'); return; }
+    setConvertErr(''); setConverting(m.key);
+    try {
+      const res = await fetch('/api/media/convert', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetId: m.assetId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'conversion failed');
+      const c = await fetchVideoCheck(m, true); // force re-inspect (bypass cache)
+      if (c) setChecks(prev => ({ ...prev, [m.key]: { ok: c.ok, warnings: c.warnings } }));
+      setSizes(s => ({ ...s, [m.key]: typeof d.bytes === 'number' ? d.bytes : (s[m.key] ?? null) }));
+    } catch (e) {
+      setConvertErr(e instanceof Error ? e.message : 'conversion failed');
+    } finally {
+      setConverting(null);
+    }
+  }, []);
+
+  const convertAll = useCallback(async () => {
+    const flagged = items.filter(m => m.type === 'video' && m.assetId && checks[m.key] && !checks[m.key].ok);
+    for (const m of flagged) await convertVideo(m);
+  }, [items, checks, convertVideo]);
 
   // Inspect existing library videos (one at a time, server-side ranged read) and
   // flag those that may not play on WhatsApp/Android.
@@ -157,6 +192,14 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
               {flaggedCount > 0 && <span className="text-amber-400"> · {flaggedCount} may not play on Android</span>}
             </p>
           </div>
+          {convertAvail && flaggedCount > 0 && (
+            <button onClick={convertAll} disabled={!!converting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-amber-400 text-black hover:bg-amber-300 disabled:opacity-50 transition-all shrink-0"
+              title="Re-encode every flagged video to a WhatsApp-safe MP4 (runs locally)">
+              {converting ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              {converting ? 'Fixing…' : `Fix ${flaggedCount} for Android`}
+            </button>
+          )}
           <input ref={fileRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => uploadFiles(e.target.files)} />
           <button onClick={() => fileRef.current?.click()} disabled={uploading > 0}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-[#25D366] text-black hover:bg-[#22c55e] disabled:opacity-50 transition-all shrink-0">
@@ -292,9 +335,25 @@ export default function MediaLibrary({ items: initialItems }: { items: MediaItem
                   <ul className="list-disc pl-5 text-amber-200/70 text-[11px] mt-1.5 space-y-0.5">
                     {checks[current.key].warnings.map((s, i) => <li key={i}>{s}</li>)}
                   </ul>
-                  <p className="text-amber-200/45 text-[10px] mt-2 font-mono break-all">
-                    Fix: ffmpeg -i in.mp4 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart out.mp4
-                  </p>
+                  {convertAvail ? (
+                    <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => current.assetId && convertVideo(current)}
+                        disabled={!current.assetId || converting === current.key}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-400 text-black hover:bg-amber-300 disabled:opacity-50 transition-all">
+                        {converting === current.key ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                        {converting === current.key ? 'Converting…' : 'Fix for Android (convert now)'}
+                      </button>
+                      <span className="text-amber-200/40 text-[10px]">Re-encodes &amp; replaces this video everywhere it’s used.</span>
+                      {!current.assetId && <span className="text-amber-200/60 text-[10px]">Pasted-URL videos can’t be converted.</span>}
+                    </div>
+                  ) : (
+                    <p className="text-amber-200/50 text-[10px] mt-2">
+                      Open this dashboard on your computer (localhost) to auto-fix it, or run:
+                      <span className="font-mono break-all block mt-1 text-amber-200/40">ffmpeg -i in.mp4 -c:v libx264 -profile:v baseline -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart out.mp4</span>
+                    </p>
+                  )}
+                  {convertErr && converting !== current.key && <p className="text-red-300 text-[10px] mt-1.5">{convertErr}</p>}
                 </div>
               )}
               <div>
