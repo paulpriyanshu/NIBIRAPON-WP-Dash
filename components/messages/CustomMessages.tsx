@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, Pencil, X, Loader2, Check, Image as ImageIcon, MessageSquare, List, MousePointerClick, Type, Send } from 'lucide-react';
+import { Plus, Trash2, Pencil, X, Loader2, Check, Image as ImageIcon, MessageSquare, List, MousePointerClick, Type, Send, ChevronUp, ChevronDown } from 'lucide-react';
 import MediaPicker, { type PickedMedia } from '@/components/flow/MediaPicker';
 import { renderCustomPreview, customMessageOptions, type CustomMessage, type CustomMessageType } from '@/lib/custom-messages';
 
@@ -58,8 +58,17 @@ function OptionPicker({ source, selected, onChange }: { source: 'categories' | '
   }, [source]);
 
   const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+  const move = (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= selected.length) return;
+    const next = [...selected];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    onChange(next);
+  };
   const ql = q.toLowerCase();
   const filtered = items.filter(it => it.name.toLowerCase().includes(ql));
+  const byId = new Map(items.map(it => [it.id, it]));
+  const orderOf = (id: string) => selected.indexOf(id);
 
   return (
     <div>
@@ -77,11 +86,48 @@ function OptionPicker({ source, selected, onChange }: { source: 'categories' | '
         <p className="text-[11px] text-gray-400 dark:text-[#667781]">No {source} found.</p>
       ) : (
         <>
+          {/* Selected, in the exact order the customer will see them (top → bottom). */}
+          {selected.length > 0 && (
+            <div className="mb-2 rounded-lg border border-wp-green/30 bg-wp-green/5">
+              <p className="px-2.5 pt-1.5 text-[10px] uppercase tracking-wide text-gray-500 dark:text-[#8696a0]">Order shown to customer (1 = top)</p>
+              <div className="divide-y divide-gray-100 dark:divide-[#2a3942]">
+                {selected.map((id, idx) => {
+                  const it = byId.get(id);
+                  return (
+                    <div key={id} className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-gray-700 dark:text-[#e9edef]">
+                      <span className="w-5 h-5 rounded-full bg-wp-green text-white text-[10px] font-bold flex items-center justify-center shrink-0">{idx + 1}</span>
+                      <div className="w-7 h-7 rounded overflow-hidden bg-gray-100 dark:bg-[#1f2c34] shrink-0 flex items-center justify-center">
+                        {it?.image
+                          // eslint-disable-next-line @next/next/no-img-element
+                          ? <img src={it.image} alt="" className="w-full h-full object-cover" />
+                          : null}
+                      </div>
+                      <span className="flex-1 min-w-0 truncate">
+                        {it?.isVariant && <span className="text-gray-400">↳ </span>}{it?.name ?? id}
+                      </span>
+                      <button type="button" onClick={() => move(idx, -1)} disabled={idx === 0}
+                        className="p-0.5 text-gray-400 hover:text-wp-green disabled:opacity-30" title="Move up"><ChevronUp size={14} /></button>
+                      <button type="button" onClick={() => move(idx, 1)} disabled={idx === selected.length - 1}
+                        className="p-0.5 text-gray-400 hover:text-wp-green disabled:opacity-30" title="Move down"><ChevronDown size={14} /></button>
+                      <button type="button" onClick={() => toggle(id)}
+                        className="p-0.5 text-gray-400 hover:text-red-500" title="Remove"><X size={13} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <input value={q} onChange={e => setQ(e.target.value)} placeholder={`Search ${source}…`} className={`${fieldCls} mb-1.5`} />
           <div className="max-h-52 overflow-y-auto border border-gray-200 dark:border-[#2a3942] rounded-lg divide-y divide-gray-100 dark:divide-[#2a3942]">
-            {filtered.map(it => (
+            {filtered.map(it => {
+              const pos = orderOf(it.id);
+              return (
               <label key={it.id} className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-gray-700 dark:text-[#e9edef] cursor-pointer hover:bg-gray-50 dark:hover:bg-[#1f2c34]">
-                <input type="checkbox" checked={selected.includes(it.id)} onChange={() => toggle(it.id)} className="accent-wp-green shrink-0" />
+                <input type="checkbox" checked={pos >= 0} onChange={() => toggle(it.id)} className="accent-wp-green shrink-0" />
+                {pos >= 0
+                  ? <span className="w-5 h-5 rounded-full bg-wp-green text-white text-[10px] font-bold flex items-center justify-center shrink-0">{pos + 1}</span>
+                  : <span className="w-5 shrink-0" />}
                 <div className="w-8 h-8 rounded overflow-hidden bg-gray-100 dark:bg-[#1f2c34] shrink-0 flex items-center justify-center">
                   {it.image
                     // eslint-disable-next-line @next/next/no-img-element
@@ -94,11 +140,12 @@ function OptionPicker({ source, selected, onChange }: { source: 'categories' | '
                 </span>
                 {it.price && <span className="text-[11px] text-gray-400 shrink-0">{it.price}</span>}
               </label>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
-      <p className="text-[11px] text-gray-400 dark:text-[#667781] mt-1">Leave all unchecked to show every {source} (up to the WhatsApp limit).</p>
+      <p className="text-[11px] text-gray-400 dark:text-[#667781] mt-1">Numbers show the order in the list (1 = top). Reorder with the arrows. Leave all unchecked to show every {source} (up to the WhatsApp limit).</p>
     </div>
   );
 }
