@@ -96,6 +96,15 @@ export default function MessageInput({ onSend, onSendCustom, disabled, replyTo, 
     setShowTemplate(false);
   };
 
+  // Upload + send several files in order (each photo is its own WhatsApp message —
+  // the Cloud API has no multi-image album, so we send them serially).
+  const handleFilesSelect = async (files: File[], fileType: 'image' | 'document' | 'audio') => {
+    setShowAttach(false);
+    for (const file of files) {
+      await handleFileSelect(file, fileType);
+    }
+  };
+
   const handleFileSelect = async (file: File, fileType: 'image' | 'document' | 'audio') => {
     setShowAttach(false);
     setUploading(true);
@@ -129,8 +138,9 @@ export default function MessageInput({ onSend, onSendCustom, disabled, replyTo, 
         ref={imageInputRef}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f, 'image'); e.target.value = ''; }}
+        onChange={(e) => { const fs = Array.from(e.target.files ?? []); e.target.value = ''; if (fs.length) handleFilesSelect(fs, 'image'); }}
       />
       <input
         ref={docInputRef}
