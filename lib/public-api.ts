@@ -11,7 +11,7 @@ const API_KEY      = process.env.PUBLIC_API_KEY || '';
 export function corsHeaders(): Record<string, string> {
   return {
     'Access-Control-Allow-Origin':  ALLOW_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, x-api-key',
     'Access-Control-Max-Age':       '86400',
   };

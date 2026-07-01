@@ -533,3 +533,53 @@ export const agentDrafts = pgTable('agent_drafts', {
 
 // Uploaded product photos/videos are stored in Cloudflare R2 (see lib/r2.ts).
 // The R2 object key is kept on each product's `media[].assetId` — no DB table needed.
+
+// ─── Storefront carts ──────────────────────────────────────────────────────
+// Shopping carts for the public storefront website. The site has no customer
+// login: each browser gets an anonymous `token` (stored in a cookie) that owns
+// one active cart. Customer contact details are captured at checkout and stamped
+// onto the cart so the owner knows whose cart it is.
+export const carts = pgTable('carts', {
+  id:            uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  // Opaque guest token held in the browser cookie — the cart's owner key.
+  token:         varchar('token', { length: 64 }).notNull(),
+  status:        varchar('status', { length: 20 }).notNull().default('active'), // 'active' | 'ordered' | 'abandoned'
+  // Filled in at checkout — nullable while the cart is still anonymous.
+  customerName:  varchar('customer_name', { length: 255 }),
+  customerEmail: varchar('customer_email', { length: 255 }),
+  customerPhone: varchar('customer_phone', { length: 40 }),
+  createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:     timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('carts_token_idx').on(t.token),
+  index('carts_status_idx').on(t.status),
+]);
+
+// One line item in a cart. `productId` points at the catalog product/variant;
+// name/price/image/color are snapshotted at add-time so the cart stays stable
+// even if the catalog product later changes or is removed.
+export const cartItems = pgTable('cart_items', {
+  id:         uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  cartId:     uuid('cart_id').notNull().references((): any => carts.id, { onDelete: 'cascade' }),
+  productId:  uuid('product_id').references((): any => catalogProducts.id, { onDelete: 'set null' }),
+  quantity:   integer('quantity').notNull().default(1),
+  // Snapshot of the product at the moment it was added.
+  name:       varchar('name', { length: 255 }).notNull(),
+  price:      integer('price').notNull().default(0), // rupees
+  image:      text('image'),
+  color:      varchar('color', { length: 100 }),
+  createdAt:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('cart_items_cart_idx').on(t.cartId),
+  // One row per (cart, product) — re-adding the same product bumps its quantity.
+  uniqueIndex('cart_items_cart_product_idx').on(t.cartId, t.productId),
+]);
+
+export const cartsRelations = relations(carts, ({ many }) => ({
+  items: many(cartItems),
+}));
+export const cartItemsRelations = relations(cartItems, ({ one }) => ({
+  cart:    one(carts, { fields: [cartItems.cartId], references: [carts.id] }),
+  product: one(catalogProducts, { fields: [cartItems.productId], references: [catalogProducts.id] }),
+}));
